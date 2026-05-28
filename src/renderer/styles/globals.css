@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+@source "../**/*.{tsx,ts}";
+@source "../index.html";
+
+@theme {
+  /* Primary accent — clean blue */
+  --color-accent: oklch(55% 0.18 260);
+  --color-accent-hover: oklch(50% 0.16 260);
+  --color-accent-subtle: oklch(55% 0.18 260 / 0.06);
+  --color-accent-muted: oklch(55% 0.18 260 / 0.12);
+
+  /* Surfaces — light mode */
+  --color-surface-0: #fafafa;
+  --color-surface-1: oklch(96% 0.003 270);
+  --color-surface-2: oklch(93% 0.004 270);
+  --color-surface-3: oklch(89.5% 0.005 270);
+
+  /* Borders */
+  --color-edge: oklch(88% 0.006 270);
+  --color-edge-subtle: oklch(92% 0.004 270);
+
+  /* Text */
+  --color-text-primary: oklch(18% 0.01 270);
+  --color-text-secondary: oklch(40% 0.01 270);
+  --color-text-tertiary: oklch(58% 0.01 270);
+
+  /* Semantic */
+  --color-success: oklch(52% 0.16 155);
+  --color-danger: oklch(55% 0.2 25);
+  --color-warning: oklch(62% 0.16 80);
+}
+
+/* Reset & base */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Drag regions for frameless window */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Scrollbar */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: oklch(78% 0.005 270);
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: oklch(65% 0.005 270);
+}
+
+/* Animations */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0.8; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.anim-slide-in {
+  animation: slide-in-right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.anim-fade-up {
+  animation: fade-up 0.2s ease-out;
+}
+.anim-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Chat content responsive width */
+.chat-content-width {
+  width: 100%;
+  max-width: calc(100% - 32px);
+}
+@media (min-width: 900px) {
+  .chat-content-width {
+    max-width: min(860px, 85%);
+  }
+}
+@media (min-width: 1440px) {
+  .chat-content-width {
+    max-width: min(880px, 62%);
+  }
+}

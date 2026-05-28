@@ -1,0 +1,40 @@
+{
+  "name": "aide",
+  "version": "0.1.0",
+  "description": "A personal work agent that sees the full picture, learns as you work, and helps you get things done.",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.0-beta.4",
+    "better-sqlite3": "^11.0.0",
+    "croner": "^8.0.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/uuid": "^10.0.0",
+    "autoprefixer": "^10.4.0",
+    "electron": "^35.7.5",
+    "electron-builder": "^25.0.0",
+    "electron-vite": "^3.0.0",
+    "lucide-react": "^0.400.0",
+    "postcss": "^8.4.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "zustand": "^5.0.0"
+  }
+}
