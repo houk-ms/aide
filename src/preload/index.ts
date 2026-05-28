@@ -36,15 +36,19 @@ const api: AideAPI = {
     list: () => ipcRenderer.invoke('jobs:list'),
     toggle: (id, enabled) => ipcRenderer.invoke('jobs:toggle', id, enabled),
     getLastSummary: (id) => ipcRenderer.invoke('jobs:getLastSummary', id),
+    run: (id) => ipcRenderer.invoke('jobs:run', id),
     create: (data) => ipcRenderer.invoke('jobs:create', data),
     update: (id, data) => ipcRenderer.invoke('jobs:update', id, data),
     delete: (id) => ipcRenderer.invoke('jobs:delete', id)
   },
   connections: {
     getStatus: () => ipcRenderer.invoke('connections:getStatus'),
+    checkCli: () => ipcRenderer.invoke('connections:checkCli'),
     authenticateGitHub: () => ipcRenderer.invoke('connections:authenticateGitHub'),
     authenticateMicrosoft: () => ipcRenderer.invoke('connections:authenticateMicrosoft'),
-    disconnect: (type) => ipcRenderer.invoke('connections:disconnect', type)
+    disconnect: (type) => ipcRenderer.invoke('connections:disconnect', type),
+    listGhAccounts: () => ipcRenderer.invoke('connections:listGhAccounts'),
+    switchGhAccount: (account) => ipcRenderer.invoke('connections:switchGhAccount', account)
   },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),

@@ -95,9 +95,19 @@ export async function startMcpServer(type: 'workiq' | 'github'): Promise<Tool[]>
 
   // Discover tools
   const toolsResult = await sendRequest(server, 'tools/list', {})
-  // Filter out accept_eula from exposed tools (already handled internally)
+  // Filter out:
+  // - accept_eula: already handled internally at startup
+  // - write/send tools: blocked by authorization system, no need to expose to LLM
+  const HIDDEN_TOOLS = new Set([
+    'accept_eula',
+    'send_email_work_iq',
+    'send_message_work_iq',
+    'reply_email_work_iq',
+    'forward_email_work_iq',
+    'reply_message_work_iq'
+  ])
   server.tools = (toolsResult.tools || [])
-    .filter((t: any) => t.name !== 'accept_eula')
+    .filter((t: any) => !HIDDEN_TOOLS.has(t.name))
     .map((t: any) => mcpToolToSdkTool(t, server))
     .filter((t: any): t is Tool<any> => t !== null)
   server.ready = true

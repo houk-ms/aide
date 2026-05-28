@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Notification } from 'electron'
+import { app, BrowserWindow, Menu, Notification, nativeImage } from 'electron'
 import { join } from 'path'
 import { registerIpcHandlers } from './ipc'
 import { getDb, closeDb } from './db'
@@ -8,6 +8,7 @@ import { createClient } from './agent/client'
 import { initMcpServers, stopAllMcpServers } from './agent/mcp'
 import { initConnectionState } from './connections'
 import { setSdkHealth } from './health'
+import { getPreferences } from './preferences'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -45,6 +46,7 @@ function createWindow(): void {
     y: state.y,
     minWidth: 900,
     minHeight: 600,
+    icon: nativeImage.createFromPath(join(__dirname, '../../resources/icon.png')),
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     titleBarOverlay: process.platform === 'win32' ? { color: '#fafafa', symbolColor: '#1a1a1a', height: 52 } : undefined,
@@ -63,6 +65,11 @@ function createWindow(): void {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+
+  // Open DevTools in development
+  if (process.env.ELECTRON_RENDERER_URL) {
+    mainWindow.webContents.openDevTools({ mode: 'right' })
   }
 
   // Save window state on close
@@ -98,16 +105,42 @@ app.whenReady().then(async () => {
   // Register IPC handlers
   registerIpcHandlers()
 
-  // Start job scheduler
-  startAllJobs()
+  // Start job scheduler (only if onboarding is complete — no connections = wasted tokens)
+  if (getPreferences().onboardingComplete) {
+    startAllJobs()
+  }
 
   // Create window
   createWindow()
 
   // Trigger morning briefing after window is ready (non-blocking)
   mainWindow?.once('ready-to-show', () => {
-    triggerMorningBriefingIfNeeded()
+    if (getPreferences().onboardingComplete) {
+      triggerMorningBriefingIfNeeded()
+    }
   })
+
+  // Periodic check for snoozed tasks that have become active (every 60s)
+  // Emits task:updated events so the UI re-renders them as active
+  setInterval(() => {
+    if (!mainWindow) return
+    const now = new Date().toISOString()
+    const db = getDb()
+    const reactivated = db.prepare(
+      `SELECT id FROM tasks WHERE snoozed_until IS NOT NULL AND snoozed_until <= ? AND status IN ('pending', 'in_progress')`
+    ).all(now) as { id: string }[]
+    if (reactivated.length > 0) {
+      // Clear snoozed_until for reactivated tasks
+      db.prepare(
+        `UPDATE tasks SET snoozed_until = NULL, updated_at = ? WHERE snoozed_until IS NOT NULL AND snoozed_until <= ? AND status IN ('pending', 'in_progress')`
+      ).run(now, now)
+      // Notify renderer to refresh
+      mainWindow.webContents.send('aide:event', { type: 'task:updated', task: null })
+      if (reactivated.length > 0 && Notification.isSupported() && getPreferences().systemNotifications) {
+        showSystemNotification('任务提醒', `${reactivated.length} 个暂停的任务已恢复`)
+      }
+    }
+  }, 60_000)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -146,11 +179,19 @@ function triggerMorningBriefingIfNeeded(): void {
 
     if (row?.content === today) return // Already did today's briefing
 
-    // Mark as done for today (do this before async work to avoid re-triggers)
+    // Also check if the cron job already ran today (avoid duplication)
+    const jobRow = db.prepare("SELECT last_run_at FROM jobs WHERE id = 'morning-briefing'").get() as { last_run_at: string | null } | undefined
+    if (jobRow?.last_run_at && jobRow.last_run_at.startsWith(today)) return
+
+    // Use a lightweight lock to prevent concurrent triggers (mark as "pending")
+    // Only mark as done on success; on failure, next app launch will retry
+    const lockKey = '__briefing_lock'
+    const lockRow = db.prepare("SELECT content FROM memory_entries WHERE id = ?").get(lockKey) as { content: string } | undefined
+    if (lockRow?.content === today) return // Already attempting today
     db.prepare(`
       INSERT OR REPLACE INTO memory_entries (id, layer, content, source, status, created_at, updated_at, tags)
-      VALUES ('__last_briefing_date', 'L0', ?, 'system', 'active', datetime('now'), datetime('now'), '[]')
-    `).run(today)
+      VALUES (?, 'L0', ?, 'system', 'active', datetime('now'), datetime('now'), '[]')
+    `).run(lockKey, today)
 
     // Run briefing asynchronously
     generateMorningBriefing().then(result => {
@@ -163,6 +204,16 @@ function triggerMorningBriefingIfNeeded(): void {
           VALUES (?, 'agent', ?, datetime('now'), NULL, NULL)
         `).run(msgId, result)
 
+        // Mark as done for today (only after success)
+        db.prepare(`
+          INSERT OR REPLACE INTO memory_entries (id, layer, content, source, status, created_at, updated_at, tags)
+          VALUES ('__last_briefing_date', 'L0', ?, 'system', 'active', datetime('now'), datetime('now'), '[]')
+        `).run(today)
+
+        // Also update the job's last_run_at so cron doesn't re-trigger at 9:00
+        const now = new Date().toISOString()
+        db.prepare(`UPDATE jobs SET last_run_at = ?, last_result = 'success', last_summary = ? WHERE id = 'morning-briefing'`).run(now, result)
+
         mainWindow.webContents.send('aide:event', {
           type: 'chat:message',
           message: { id: msgId, role: 'agent', content: result, timestamp: new Date().toISOString(), taskId: null }
@@ -170,6 +221,11 @@ function triggerMorningBriefingIfNeeded(): void {
       }
     }).catch(err => {
       console.error('[Aide] Morning briefing failed:', err)
+      // Clear the lock so next app launch will retry
+      try {
+        const db = getDb()
+        db.prepare("DELETE FROM memory_entries WHERE id = ?").run(lockKey)
+      } catch { /* ignore */ }
     })
   } catch (err) {
     console.error('[Aide] Morning briefing check failed:', err)

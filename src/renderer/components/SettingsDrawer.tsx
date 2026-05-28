@@ -89,6 +89,31 @@ export function SettingsDrawer() {
 
 function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const disconnect = useSettingsStore(s => s.disconnect)
+  const [cliStatus, setCliStatus] = useState<{ gh: boolean; npx: boolean } | null>(null)
+  const [ghAccounts, setGhAccounts] = useState<{ account: string; active: boolean }[]>([])
+  const [switching, setSwitching] = useState(false)
+
+  useEffect(() => {
+    window.aide.connections.checkCli().then(setCliStatus)
+    window.aide.connections.listGhAccounts().then(setGhAccounts)
+  }, [])
+
+  const handleSwitchAccount = async (account: string) => {
+    setSwitching(true)
+    try {
+      await window.aide.connections.switchGhAccount(account)
+      const accs = await window.aide.connections.listGhAccounts()
+      setGhAccounts(accs)
+    } finally {
+      setSwitching(false)
+    }
+  }
+
+  const isCliMissing = (type: string) => {
+    if (!cliStatus) return false
+    if (type === 'github') return !cliStatus.gh
+    return false // workiq uses npx auto-download
+  }
 
   return (
     <div className="space-y-4">
@@ -117,19 +142,54 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                   <span className={`text-[11px] ${
                     conn.verified ? 'text-success' : conn.authenticated ? 'text-warning' : 'text-text-tertiary'
                   }`}>
-                    {conn.verified ? '已连接' : conn.authenticated ? '已登录 · 权限待验证' : '未连接'}
+                    {conn.verified
+                      ? `已连接${conn.activeAccount ? ` · ${conn.activeAccount}` : ''}`
+                      : conn.authenticated ? '已登录 · 权限待验证' : '未连接'}
                   </span>
                 </div>
                 {conn.lastError && <p className="text-[11px] text-danger mt-1">{conn.lastError}</p>}
+                {conn.type === 'github' && conn.authenticated && ghAccounts.length > 1 && (
+                  <div className="mt-2">
+                    <p className="text-[10px] text-text-tertiary mb-1">切换账号：</p>
+                    <div className="flex flex-wrap gap-1">
+                      {ghAccounts.map(acc => (
+                        <button
+                          key={acc.account}
+                          disabled={acc.active || switching}
+                          onClick={() => handleSwitchAccount(acc.account)}
+                          className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
+                            acc.active
+                              ? 'bg-accent/15 text-accent font-medium cursor-default'
+                              : 'bg-surface-2 text-text-secondary hover:bg-surface-2/80 hover:text-text-primary'
+                          } ${switching ? 'opacity-50' : ''}`}
+                        >
+                          {acc.account}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {isCliMissing(conn.type) && !conn.authenticated && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-surface-2/60 border border-edge-subtle">
+                    <p className="text-[11px] text-text-secondary mb-1">需要先安装 <code className="bg-surface-2 px-1 rounded text-[10px]">gh</code> CLI：</p>
+                    <p className="text-[11px] text-text-tertiary">
+                      <code className="bg-surface-2 px-1 rounded text-[10px]">winget install GitHub.cli</code>
+                      {' · '}
+                      <a href="https://cli.github.com" className="text-accent hover:underline" onClick={e => { e.preventDefault(); window.open('https://cli.github.com') }}>下载页</a>
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {conn.authenticated && (
                 <Btn variant="danger" onClick={() => disconnect(conn.type)}>断开</Btn>
               )}
-              <Btn onClick={() => conn.type === 'github' ? window.aide.connections.authenticateGitHub() : window.aide.connections.authenticateMicrosoft()}>
-                {conn.authenticated ? '重新授权' : '连接'}
-              </Btn>
+              {!isCliMissing(conn.type) && (
+                <Btn onClick={() => conn.type === 'github' ? window.aide.connections.authenticateGitHub() : window.aide.connections.authenticateMicrosoft()}>
+                  {conn.authenticated ? '重新授权' : '连接'}
+                </Btn>
+              )}
             </div>
           </div>
         </Card>
@@ -543,7 +603,13 @@ function buildCron(type: string, interval: number, hour: number, minute: number,
   switch (type) {
     case 'interval': return `*/${interval} * * * *`
     case 'daily': return `${minute} ${hour} * * *`
-    case 'weekly': return `${minute} ${hour} * * ${weekdays.length ? weekdays.join(',') : '1-5'}`
+    case 'weekly': {
+      const sorted = [...weekdays].sort((a, b) => a - b)
+      // Use range notation if consecutive (e.g. 1,2,3,4,5 → 1-5)
+      const isConsecutive = sorted.length > 1 && sorted[sorted.length - 1] - sorted[0] === sorted.length - 1
+      const dowStr = sorted.length === 0 ? '1-5' : isConsecutive ? `${sorted[0]}-${sorted[sorted.length - 1]}` : sorted.join(',')
+      return `${minute} ${hour} * * ${dowStr}`
+    }
     case 'monthly': return `${minute} ${hour} ${monthDay} * *`
     default: return '*/15 * * * *'
   }
@@ -829,15 +895,31 @@ function describeCron(cron: string): string {
   const parts = cron.trim().split(/\s+/)
   if (parts.length !== 5) return cron
 
-  const [min, hour, , , dow] = parts
-  const isWorkdays = dow === '1-5'
-  const dayLabel = isWorkdays ? '工作日' : dow === '*' ? '' : `周${dow}`
+  const [min, hour, dom, , dow] = parts
+
+  // Normalize weekday detection: '1-5' or '1,2,3,4,5' both count as workdays
+  const isWorkdays = dow === '1-5' || dow === '1,2,3,4,5'
+  const dayNames = ['', '一', '二', '三', '四', '五', '六', '日']
+  let dayLabel = ''
+  if (isWorkdays) {
+    dayLabel = '工作日'
+  } else if (dow !== '*') {
+    const days = dow.split(',').map(d => `周${dayNames[parseInt(d)] || d}`).join('/')
+    dayLabel = days
+  }
 
   // Every N minutes
   if (min.startsWith('*/')) {
     const n = min.slice(2)
     return `每 ${n} 分钟`
   }
+
+  // Monthly (day-of-month specified)
+  if (dom !== '*') {
+    const time = `${hour}:${min.padStart(2, '0')}`
+    return `每月 ${dom} 日 ${time}`
+  }
+
   // Every hour
   if (min === '0' && hour === '*') return '每小时整点'
   // Specific hours

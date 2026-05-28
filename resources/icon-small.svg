@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Rounded square -->
+  <rect width="32" height="32" rx="7" fill="#4172F0"/>
+
+  <!-- Bold A -->
+  <path d="M16 6 L24 26 L20.5 26 L18.5 21 L13.5 21 L11.5 26 L8 26 Z M16 12 L14.2 19 L17.8 19 Z" fill="white"/>
+
+  <!-- Spark -->
+  <path d="M23 7 L24 9.5 L26.5 10.5 L24 11.5 L23 14 L22 11.5 L19.5 10.5 L22 9.5 Z" fill="white" opacity="0.85"/>
+</svg>

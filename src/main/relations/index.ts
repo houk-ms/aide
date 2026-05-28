@@ -16,6 +16,7 @@ function rowToRelation(row: Record<string, unknown>): Relation {
     expertise: JSON.parse(row.expertise as string),
     communicationStyle: row.communication_style as string | null,
     notes: row.notes as string | null,
+    source: (row.source as 'user' | 'agent') || 'user',
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string
   }
@@ -39,8 +40,8 @@ export function createRelation(input: CreateRelationInput): Relation {
   const id = uuid()
 
   db.prepare(`
-    INSERT INTO relations (id, name, role, org, title, email, teams_id, timezone, expertise, communication_style, notes, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO relations (id, name, role, org, title, email, teams_id, timezone, expertise, communication_style, notes, source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.name,
@@ -53,6 +54,7 @@ export function createRelation(input: CreateRelationInput): Relation {
     JSON.stringify(input.expertise || []),
     input.communicationStyle || null,
     input.notes || null,
+    input.source || 'user',
     now,
     now
   )

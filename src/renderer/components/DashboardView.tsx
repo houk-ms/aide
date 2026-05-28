@@ -1,9 +1,11 @@
 import React, { useState, useMemo } from 'react'
-import { Check, Clock, Mail, Github, MessageSquare, Calendar, User, Zap, X } from 'lucide-react'
+import { Check, Copy, FileText, Mail, Github, MessageSquare, Calendar, User, X, Zap } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import type { Task, TaskSource } from '@shared/types'
 
 type TimeRange = 'week' | 'month' | 'custom'
+type CompletionView = 'completed' | 'ignored'
+type ReportTarget = { type: 'daily'; key: string }
 
 export function DashboardView() {
   const { tasks, selectTask, completeTask } = useTaskStore()
@@ -15,14 +17,14 @@ export function DashboardView() {
   const inProgressTasks = tasks.filter(t =>
     (t.status === 'pending' || t.status === 'in_progress') && t.seenAt !== null
   )
-  const allCompleted = tasks.filter(t => t.status === 'completed' || t.status === 'cancelled')
+  const historyTasks = tasks.filter(t => t.status === 'completed' || t.status === 'cancelled')
 
   // Time range filter for completed
   const [timeRange, setTimeRange] = useState<TimeRange>('week')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
 
-  const completedTasks = useMemo(() => {
+  const historyInRange = useMemo(() => {
     const now = new Date()
     let from: Date
 
@@ -41,14 +43,18 @@ export function DashboardView() {
       ? new Date(new Date(customTo).getTime() + 86400000)
       : new Date(now.getTime() + 86400000)
 
-    return allCompleted.filter(t => {
+    return historyTasks.filter(t => {
       const d = new Date(t.completedAt || t.updatedAt)
       return d >= from && d < to
     })
-  }, [allCompleted, timeRange, customFrom, customTo])
+  }, [historyTasks, timeRange, customFrom, customTo])
+
+  const completedTasks = historyInRange.filter(t => t.status === 'completed')
+  const ignoredTasks = historyInRange.filter(t => t.status === 'cancelled')
 
   const completedByDate = groupByDate(completedTasks)
-  const dateKeys = Object.keys(completedByDate)
+  const ignoredByDate = groupByDate(ignoredTasks)
+  const dateKeys = mergeDateKeys(completedByDate, ignoredByDate)
 
   return (
     <div className="flex-1 flex flex-col bg-surface-0 min-w-0 min-h-0">
@@ -78,9 +84,9 @@ export function DashboardView() {
             )}
           </section>
 
-          {/* ═══ Section: 进行中 ═══ */}
+          {/* ═══ Section: 处理中 ═══ */}
           <section>
-            <SectionBar title="进行中" count={inProgressTasks.length} variant="default" />
+            <SectionBar title="处理中" count={inProgressTasks.length} variant="default" />
             {inProgressTasks.length > 0 ? (
               <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
                 {inProgressTasks.map(task => (
@@ -88,7 +94,7 @@ export function DashboardView() {
                 ))}
               </div>
             ) : (
-              <EmptySection message="没有正在处理的任务" />
+              <EmptySection message="没有处理中的任务" />
             )}
           </section>
 
@@ -122,16 +128,17 @@ export function DashboardView() {
               </div>
             )}
 
-            {completedTasks.length > 0 ? (
+            {historyInRange.length > 0 ? (
               <div className="mt-4">
                 <CompletedTimeline
                   dateKeys={dateKeys}
-                  groupedTasks={completedByDate}
+                  completedByDate={completedByDate}
+                  ignoredByDate={ignoredByDate}
                   onSelect={selectTask}
                 />
               </div>
             ) : (
-              <EmptySection message="该时间段内没有已完成的任务" />
+              <EmptySection message="该时间段内没有已完成或已忽略的任务" />
             )}
           </section>
 
@@ -206,21 +213,16 @@ function EmptySection({ message }: { message: string }) {
 
 function NewTaskCard({ task, onSelect }: { task: Task; onSelect: () => void }) {
   const { completeTask } = useTaskStore()
-  const priorityBorder = {
-    high: 'border-l-danger',
-    medium: 'border-l-warning',
-    low: 'border-l-edge'
-  }[task.priority]
 
   return (
     <div
       onClick={onSelect}
-      className={`group relative bg-white border border-edge rounded-xl overflow-hidden cursor-pointer transition-all hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.06)] border-l-[3px] ${priorityBorder}`}
+      className="group relative bg-white border border-edge rounded-xl overflow-hidden cursor-pointer transition-all hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.06)]"
     >
       <div className="px-4 py-3.5">
-        {/* Title */}
+        {/* Title with inline priority */}
         <h3 className="text-[14px] font-medium text-text-primary leading-[1.5] line-clamp-2 pr-16">
-          {task.title}
+          <PriorityTag priority={task.priority} />{' '}{task.title}
         </h3>
 
         {/* Description — the key info */}
@@ -261,34 +263,34 @@ function NewTaskCard({ task, onSelect }: { task: Task; onSelect: () => void }) {
 function InProgressCard({ task, onSelect }: { task: Task; onSelect: () => void }) {
   const { completeTask } = useTaskStore()
 
+  const cardStyle = {
+    p0: 'bg-[oklch(0.97_0.01_270)] border-[oklch(0.85_0.03_270)] border-l-[oklch(0.50_0.08_270)]',  // subtle indigo tint
+    p1: 'bg-[oklch(0.98_0.005_160)] border-[oklch(0.90_0.02_160)] border-l-[oklch(0.60_0.06_160)]', // subtle sage tint
+    p2: 'bg-white border-edge border-l-[oklch(0.80_0_0)]'                                            // nearly plain
+  }[task.priority] || 'bg-white border-edge border-l-edge'
+
   return (
     <div
       onClick={onSelect}
-      className="group relative bg-white border border-edge rounded-xl overflow-hidden cursor-pointer transition-all hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.06)]"
+      className={`group relative rounded-xl overflow-hidden cursor-pointer transition-all hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.06)] border border-l-2 ${cardStyle}`}
     >
       <div className="px-4 py-3.5">
-        {/* Title with live indicator */}
+        {/* Title with inline priority */}
         <div className="flex items-center gap-2 pr-16">
-          <div className="relative shrink-0">
-            <div className={`w-2 h-2 rounded-full ${getPriorityColor(task.priority)}`} />
-            {task.status === 'in_progress' && (
-              <div className={`absolute inset-0 w-2 h-2 rounded-full ${getPriorityColor(task.priority)} animate-ping opacity-30`} />
-            )}
-          </div>
           <h3 className="text-[14px] font-medium text-text-primary leading-[1.5] line-clamp-2 flex-1">
-            {task.title}
+            <PriorityTag priority={task.priority} />{' '}{task.title}
           </h3>
         </div>
 
         {/* Description — what's happening */}
         {task.description && (
-          <p className="text-[13px] text-text-secondary leading-[1.5] mt-2 pl-[18px] line-clamp-2">
+          <p className="text-[13px] text-text-secondary leading-[1.5] mt-2 line-clamp-2">
             {task.description}
           </p>
         )}
 
         {/* Subtle metadata footer */}
-        <div className="flex items-center gap-3 mt-3 pl-[18px] text-[11px] text-text-tertiary">
+        <div className="flex items-center gap-3 mt-3 text-[11px] text-text-tertiary">
           <span className="inline-flex items-center gap-1">
             {getSourceIcon(task.source, 11)}
             {getSourceLabel(task.source)}
@@ -315,11 +317,19 @@ function InProgressCard({ task, onSelect }: { task: Task; onSelect: () => void }
    Completed Timeline
    ═══════════════════════════════════════════ */
 
-function CompletedTimeline({ dateKeys, groupedTasks, onSelect }: {
+function CompletedTimeline({ dateKeys, completedByDate, ignoredByDate, onSelect }: {
   dateKeys: string[]
-  groupedTasks: Record<string, Task[]>
+  completedByDate: Record<string, Task[]>
+  ignoredByDate: Record<string, Task[]>
   onSelect: (id: string) => void
 }) {
+  const [viewByDate, setViewByDate] = useState<Record<string, CompletionView>>({})
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
+
+  const toggleReport = (target: ReportTarget) => {
+    setReportTarget(current => current?.type === target.type && current.key === target.key ? null : target)
+  }
+
   return (
     <div className="relative">
       {/* Vertical timeline line */}
@@ -327,17 +337,55 @@ function CompletedTimeline({ dateKeys, groupedTasks, onSelect }: {
 
       <div className="space-y-5">
         {dateKeys.map(date => {
-          const dayTasks = groupedTasks[date]
+          const completedTasks = completedByDate[date] || []
+          const ignoredTasks = ignoredByDate[date] || []
+          const currentView = viewByDate[date] || (completedTasks.length > 0 ? 'completed' : 'ignored')
+          const dayTasks = currentView === 'completed' ? completedTasks : ignoredTasks
+          const isIgnoredView = currentView === 'ignored'
+          const canShowDailyReport = !isTodayLabel(date)
+
           return (
             <div key={date} className="relative pl-6">
               {/* Timeline node */}
-              <div className="absolute left-[4px] top-[5px] w-[7px] h-[7px] rounded-full bg-success/60 border-2 border-surface-0" />
+              <div className={`absolute left-[4px] top-[5px] w-[7px] h-[7px] rounded-full border-2 border-surface-0 ${isIgnoredView ? 'bg-text-tertiary/35' : 'bg-success/60'}`} />
 
               {/* Date header */}
               <div className="flex items-baseline gap-2.5 mb-2">
                 <span className="text-[12px] font-semibold text-text-secondary">{date}</span>
-                <span className="text-[11px] text-text-tertiary">{dayTasks.length} 项完成</span>
+                {completedTasks.length > 0 && (
+                  <button
+                    onClick={() => setViewByDate(prev => ({ ...prev, [date]: 'completed' }))}
+                    className={`text-[11px] transition-colors ${currentView === 'completed' ? 'text-text-secondary font-medium' : 'text-text-tertiary hover:text-text-secondary'}`}
+                  >
+                    {completedTasks.length} 项完成
+                  </button>
+                )}
+                {ignoredTasks.length > 0 && (
+                  <button
+                    onClick={() => setViewByDate(prev => ({ ...prev, [date]: 'ignored' }))}
+                    className={`text-[11px] transition-colors ${currentView === 'ignored' ? 'text-text-secondary font-medium' : 'text-text-tertiary hover:text-text-secondary'}`}
+                  >
+                    {ignoredTasks.length} 项忽略
+                  </button>
+                )}
+                {canShowDailyReport && (
+                  <button
+                    onClick={() => toggleReport({ type: 'daily', key: date })}
+                    className={`inline-flex items-center gap-1 text-[11px] transition-colors ${reportTarget?.key === date ? 'text-accent font-medium' : 'text-text-tertiary hover:text-accent'}`}
+                  >
+                    <FileText size={11} /> 日报
+                  </button>
+                )}
               </div>
+
+              {reportTarget?.key === date && (
+                <ReportCard
+                  title={`${date}日报`}
+                  completedTasks={completedTasks}
+                  ignoredTasks={ignoredTasks}
+                  onClose={() => setReportTarget(null)}
+                />
+              )}
 
               {/* Tasks for this date */}
               <div className="space-y-1">
@@ -347,7 +395,11 @@ function CompletedTimeline({ dateKeys, groupedTasks, onSelect }: {
                     onClick={() => onSelect(task.id)}
                     className="flex items-center gap-2.5 py-[5px] px-2.5 -mx-1 rounded-lg cursor-pointer hover:bg-surface-1 transition-colors group"
                   >
-                    <Check size={12} className="text-success/50 shrink-0" />
+                    {isIgnoredView ? (
+                      <X size={12} className="text-text-tertiary/45 shrink-0" />
+                    ) : (
+                      <Check size={12} className="text-success/50 shrink-0" />
+                    )}
                     <span className="text-[13px] text-text-tertiary group-hover:text-text-secondary truncate flex-1 transition-colors">
                       {task.title}
                     </span>
@@ -369,6 +421,68 @@ function CompletedTimeline({ dateKeys, groupedTasks, onSelect }: {
           )
         })}
       </div>
+    </div>
+  )
+}
+
+function ReportCard({ title, completedTasks, ignoredTasks, onClose }: {
+  title: string
+  completedTasks: Task[]
+  ignoredTasks: Task[]
+  onClose: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const reportText = buildReportText(title, completedTasks, ignoredTasks)
+
+  const copyReport = async () => {
+    await navigator.clipboard.writeText(reportText)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <div className="mb-2.5 rounded-xl border border-edge bg-surface-1 p-3.5 shadow-[0_1px_3px_-2px_rgba(0,0,0,0.18)]">
+      <div className="flex items-center justify-between gap-3 mb-2.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <FileText size={14} className="text-accent shrink-0" />
+          <span className="text-[13px] font-medium text-text-primary truncate">{title}</span>
+          <span className="text-[11px] text-text-tertiary shrink-0">{completedTasks.length} 完成 · {ignoredTasks.length} 忽略</span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button onClick={copyReport} className="h-6 px-2 rounded-md text-[11px] text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors inline-flex items-center gap-1">
+            {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
+            {copied ? '已复制' : '复制'}
+          </button>
+          <button onClick={onClose} className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors" title="关闭">
+            <X size={12} />
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3 max-h-[280px] overflow-y-auto scrollbar-thin pr-1">
+        <ReportSection title="完成" tasks={completedTasks} icon="check" empty="没有完成项" />
+        {ignoredTasks.length > 0 && <ReportSection title="忽略" tasks={ignoredTasks} icon="x" empty="没有忽略项" />}
+      </div>
+    </div>
+  )
+}
+
+function ReportSection({ title, tasks, icon, empty }: { title: string; tasks: Task[]; icon: 'check' | 'x'; empty: string }) {
+  return (
+    <div>
+      <p className="text-[11px] font-medium text-text-tertiary mb-1.5">{title}</p>
+      {tasks.length === 0 ? (
+        <p className="text-[12px] text-text-tertiary/60">{empty}</p>
+      ) : (
+        <div className="space-y-1">
+          {tasks.map(task => (
+            <div key={task.id} className="flex items-center gap-2 text-[12px] text-text-secondary">
+              {icon === 'check' ? <Check size={11} className="text-success/55 shrink-0" /> : <X size={11} className="text-text-tertiary/45 shrink-0" />}
+              <span className="truncate">{task.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -404,8 +518,14 @@ function ActionDot({ icon, onClick, color, title }: {
    Helpers
    ═══════════════════════════════════════════ */
 
-function getPriorityColor(priority: string): string {
-  return { high: 'bg-danger', medium: 'bg-warning', low: 'bg-text-tertiary' }[priority] || 'bg-text-tertiary'
+function PriorityTag({ priority }: { priority: string }) {
+  const styles = {
+    p0: 'bg-[oklch(0.35_0.05_270)] text-white',                   // solid dark indigo, white text — stands out
+    p1: 'bg-[oklch(0.93_0.03_160)] text-[oklch(0.38_0.05_160)]',  // light sage bg, dark sage text
+    p2: 'bg-[oklch(0.95_0_0)] text-[oklch(0.55_0_0)]'             // near-white gray bg, mid gray text
+  }[priority] || 'bg-[oklch(0.95_0_0)] text-[oklch(0.55_0_0)]'
+
+  return <span className={`inline-block px-[5px] py-[1px] rounded text-[10px] font-semibold leading-[1.4] align-middle ${styles}`}>{priority.toUpperCase()}</span>
 }
 
 function getSourceIcon(source: TaskSource, size = 12): React.ReactNode {
@@ -477,4 +597,27 @@ function groupByDate(tasks: Task[]): Record<string, Task[]> {
     groups[label].push(task)
   }
   return groups
+}
+
+function mergeDateKeys(primary: Record<string, Task[]>, secondary: Record<string, Task[]>): string[] {
+  const keys: string[] = []
+  for (const key of Object.keys(primary)) keys.push(key)
+  for (const key of Object.keys(secondary)) {
+    if (!keys.includes(key)) keys.push(key)
+  }
+  return keys
+}
+
+function isTodayLabel(label: string): boolean {
+  return label === '今天'
+}
+
+function buildReportText(title: string, completedTasks: Task[], ignoredTasks: Task[]): string {
+  const lines = [title, '', `完成：${completedTasks.length} 项`]
+  for (const task of completedTasks) lines.push(`- ${task.title}`)
+  if (ignoredTasks.length > 0) {
+    lines.push('', `忽略：${ignoredTasks.length} 项`)
+    for (const task of ignoredTasks) lines.push(`- ${task.title}`)
+  }
+  return lines.join('\n')
 }

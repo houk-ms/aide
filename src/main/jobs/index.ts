@@ -48,27 +48,42 @@ function scheduleJob(job: Job): void {
   activeJobs.set(job.id, cronJob)
 }
 
-async function runJob(jobId: string): Promise<void> {
+export async function runJob(jobId: string): Promise<void> {
   const db = getDb()
   const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as Record<string, unknown> | undefined
   if (!row) return
 
   const job = rowToJob(row)
   const now = new Date().toISOString()
+  const today = now.split('T')[0]
 
-  // Pre-filter: For periodic-poll, check if there's any reason to run
-  // (Skip the expensive LLM call if nothing has changed)
+  // Pre-filter: For periodic-poll, skip if last run was very recent
   if (jobId === 'periodic-poll') {
     const lastRun = job.lastRunAt ? new Date(job.lastRunAt).getTime() : 0
     const minutesSince = (Date.now() - lastRun) / (1000 * 60)
-    // If last run was less than 10 minutes ago and succeeded, skip
-    if (minutesSince < 10 && job.lastResult === 'success') {
+    if (minutesSince < 50 && job.lastResult === 'success') {
       return
     }
   }
 
+  // Pre-filter: For morning-briefing, skip if already ran today (startup trigger or earlier cron)
+  if (jobId === 'morning-briefing') {
+    if (job.lastRunAt && job.lastRunAt.startsWith(today) && job.lastResult === 'success') {
+      return
+    }
+  }
+
+  // Pre-filter: For world-sync, skip if already ran this week
+  if (jobId === 'world-sync') {
+    if (job.lastRunAt && job.lastResult === 'success') {
+      const lastRun = new Date(job.lastRunAt).getTime()
+      const daysSince = (Date.now() - lastRun) / (1000 * 60 * 60 * 24)
+      if (daysSince < 6) return
+    }
+  }
+
   try {
-    const summary = await executeJobSession(job.instruction, jobId)
+    const summary = await executeJobSession(job.instruction, jobId, job.lastRunAt)
 
     db.prepare(`
       UPDATE jobs SET last_run_at = ?, last_result = 'success', last_summary = ? WHERE id = ?
@@ -88,6 +103,16 @@ async function runJob(jobId: string): Promise<void> {
     db.prepare(`
       UPDATE jobs SET last_run_at = ?, last_result = 'failed', last_summary = ? WHERE id = ?
     `).run(now, errorMsg, jobId)
+
+    // Surface failure to renderer so user knows something's wrong
+    const windows = BrowserWindow.getAllWindows()
+    for (const win of windows) {
+      win.webContents.send('aide:event', {
+        type: 'job:failed',
+        jobId,
+        error: errorMsg
+      })
+    }
   }
 }
 
@@ -132,23 +157,26 @@ export function createJob(data: { name: string; cron: string; instruction: strin
 
 export function updateJob(id: string, data: { name?: string; cron?: string; instruction?: string }): void {
   const db = getDb()
+
+  // Read current row to check what actually changed
+  const current = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as Record<string, unknown> | undefined
+  if (!current) return
+
   const sets: string[] = []
   const vals: unknown[] = []
 
-  if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name) }
-  if (data.cron !== undefined) { sets.push('cron = ?'); vals.push(data.cron) }
-  if (data.instruction !== undefined) { sets.push('instruction = ?'); vals.push(data.instruction) }
+  if (data.name !== undefined && data.name !== current.name) { sets.push('name = ?'); vals.push(data.name) }
+  if (data.cron !== undefined && data.cron !== current.cron) { sets.push('cron = ?'); vals.push(data.cron) }
+  if (data.instruction !== undefined && data.instruction !== current.instruction) { sets.push('instruction = ?'); vals.push(data.instruction) }
 
   if (sets.length === 0) return
   vals.push(id)
   db.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
 
-  // Reschedule if cron changed and job is enabled
-  if (data.cron !== undefined) {
+  // Reschedule if cron actually changed and job is enabled
+  if (data.cron !== undefined && data.cron !== current.cron && (current.enabled as number) === 1) {
     const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as Record<string, unknown> | undefined
-    if (row && (row.enabled as number) === 1) {
-      scheduleJob(rowToJob(row))
-    }
+    if (row) scheduleJob(rowToJob(row))
   }
 }
 

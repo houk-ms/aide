@@ -12,7 +12,7 @@ import type { AideEvent } from '@shared/types'
 export default function App() {
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null)
   const fetchTasks = useTaskStore(s => s.fetchTasks)
-  const { appendStreamDelta, endStream, fetchHistory, addMessage, addPendingAction } = useChatStore()
+  const { appendStreamDelta, endStream, fetchHistory, addMessage, addPendingAction, updateToolCall } = useChatStore()
   const selectedTaskIdRef = useRef<string | null>(null)
 
   // Keep ref in sync
@@ -60,6 +60,9 @@ export default function App() {
         case 'chat:pending-action':
           addPendingAction(event.action)
           break
+        case 'chat:tool-use':
+          updateToolCall(event.record)
+          break
         case 'job:completed':
           fetchTasks()
           // If user is on General chat, inject job summary as a message
@@ -68,6 +71,18 @@ export default function App() {
               id: `job-${Date.now()}`,
               role: 'agent',
               content: `[自动任务完成] ${event.summary}`,
+              timestamp: new Date().toISOString(),
+              taskId: null
+            })
+          }
+          break
+        case 'job:failed':
+          // Surface job failure as a warning in General chat
+          if (!selectedTaskIdRef.current) {
+            addMessage({
+              id: `job-err-${Date.now()}`,
+              role: 'agent',
+              content: `⚠️ 后台任务执行失败（${(event as any).jobId}）：${(event as any).error}\n\n请检查连接设置是否正常。`,
               timestamp: new Date().toISOString(),
               taskId: null
             })

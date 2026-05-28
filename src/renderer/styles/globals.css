@@ -98,3 +98,66 @@
     max-width: min(880px, 62%);
   }
 }
+
+/* Prose overrides for chat messages */
+.prose {
+  --tw-prose-body: oklch(40% 0.01 270);
+  --tw-prose-headings: oklch(18% 0.01 270);
+  --tw-prose-bold: oklch(18% 0.01 270);
+  --tw-prose-links: oklch(55% 0.18 260);
+  --tw-prose-code: oklch(30% 0.01 270);
+  --tw-prose-th-borders: oklch(88% 0.006 270);
+  --tw-prose-td-borders: oklch(92% 0.004 270);
+}
+.prose h1, .prose h2, .prose h3 {
+  margin-top: 1em;
+  margin-bottom: 0.4em;
+}
+.prose p {
+  margin-top: 0.4em;
+  margin-bottom: 0.4em;
+}
+.prose ul, .prose ol {
+  margin-top: 0.3em;
+  margin-bottom: 0.3em;
+  padding-left: 1.4em;
+}
+.prose li {
+  margin-top: 0.15em;
+  margin-bottom: 0.15em;
+}
+.prose table {
+  font-size: 12px;
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+.prose th, .prose td {
+  border: 1px solid oklch(88% 0.006 270);
+  padding: 4px 8px;
+  text-align: left;
+}
+.prose th {
+  background: oklch(96% 0.003 270);
+  font-weight: 600;
+}
+.prose code:not(pre code) {
+  background: oklch(93% 0.004 270);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.prose pre {
+  background: oklch(96% 0.003 270);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+.prose hr {
+  border-color: oklch(92% 0.004 270);
+  margin: 0.8em 0;
+}

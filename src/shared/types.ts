@@ -30,7 +30,7 @@ export interface Task {
 }
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
-export type Priority = 'high' | 'medium' | 'low'
+export type Priority = 'p0' | 'p1' | 'p2'
 
 export interface TaskSource {
   type: 'email' | 'teams' | 'github' | 'calendar' | 'user' | 'agent'
@@ -69,6 +69,7 @@ export interface Project {
   techStack: string | null
   team: string[]
   notes: string | null
+  source: 'user' | 'agent'
   createdAt: string
   updatedAt: string
 }
@@ -87,6 +88,7 @@ export interface Relation {
   expertise: string[]
   communicationStyle: string | null
   notes: string | null
+  source: 'user' | 'agent'
   createdAt: string
   updatedAt: string
 }
@@ -121,6 +123,8 @@ export interface ConnectionStatus {
   authenticated: boolean
   verified: boolean // true = actually tested a real API call successfully
   lastError: string | null
+  lastPolledAt: string | null
+  activeAccount: string | null // e.g. GitHub username
 }
 
 // === IPC API ===
@@ -159,15 +163,19 @@ export interface AideAPI {
     list(): Promise<Job[]>
     toggle(id: string, enabled: boolean): Promise<void>
     getLastSummary(id: string): Promise<string | null>
+    run(id: string): Promise<void>
     create(data: { name: string; cron: string; instruction: string; enabled?: boolean }): Promise<Job>
     update(id: string, data: { name?: string; cron?: string; instruction?: string }): Promise<void>
     delete(id: string): Promise<void>
   }
   connections: {
     getStatus(): Promise<ConnectionStatus[]>
+    checkCli(): Promise<{ gh: boolean; npx: boolean }>
     authenticateGitHub(): Promise<void>
     authenticateMicrosoft(): Promise<void>
     disconnect(type: 'workiq' | 'github'): Promise<void>
+    listGhAccounts(): Promise<{ account: string; active: boolean }[]>
+    switchGhAccount(account: string): Promise<void>
   }
   projects: {
     list(): Promise<Project[]>
@@ -212,6 +220,7 @@ export interface CreateProjectInput {
   techStack?: string
   team?: string[]
   notes?: string
+  source?: 'user' | 'agent'
 }
 
 export interface CreateRelationInput {
@@ -225,6 +234,7 @@ export interface CreateRelationInput {
   expertise?: string[]
   communicationStyle?: string
   notes?: string
+  source?: 'user' | 'agent'
 }
 
 // === Filter Types ===
@@ -256,9 +266,20 @@ export interface ChatMessage {
 export interface PendingAction {
   id: string
   type: string
+  toolName?: string
   description: string
   details: Record<string, unknown>
   status: 'pending' | 'confirmed' | 'cancelled'
+}
+
+export interface ToolCallRecord {
+  id: string
+  toolName: string
+  status: 'running' | 'done' | 'error'
+  timestamp: string
+  durationMs?: number
+  inputPreview?: string
+  resultPreview?: string
 }
 
 // === Preferences ===
@@ -296,6 +317,9 @@ export type AideEvent =
   | { type: 'chat:stream'; taskId: string | null; delta: string }
   | { type: 'chat:stream-end'; taskId: string | null }
   | { type: 'chat:pending-action'; action: PendingAction }
+  | { type: 'chat:tool-use'; taskId: string | null; record: ToolCallRecord }
+  | { type: 'chat:action-expired'; actionId: string }
   | { type: 'job:completed'; jobId: string; summary: string }
+  | { type: 'job:failed'; jobId: string; error: string }
   | { type: 'connection:status'; connections: ConnectionStatus[] }
   | { type: 'connection:auth-progress'; connectionType: string; userCode: string; verificationUri: string }

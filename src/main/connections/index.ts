@@ -5,24 +5,150 @@ import type { ConnectionStatus } from '@shared/types'
 
 // Connection state
 const connections: Map<string, ConnectionStatus> = new Map([
-  ['workiq', { id: 'workiq', type: 'workiq', authenticated: false, verified: false, lastError: null }],
-  ['github', { id: 'github', type: 'github', authenticated: false, verified: false, lastError: null }]
+  ['workiq', { id: 'workiq', type: 'workiq', authenticated: false, verified: false, lastError: null, lastPolledAt: null, activeAccount: null }],
+  ['github', { id: 'github', type: 'github', authenticated: false, verified: false, lastError: null, lastPolledAt: null, activeAccount: null }]
 ])
 
 export function getConnectionStatus(): ConnectionStatus[] {
   return Array.from(connections.values())
 }
 
+// === Check CLI Availability ===
+
+export async function checkCliAvailability(): Promise<{ gh: boolean; npx: boolean }> {
+  const check = (cmd: string, args: string[]): Promise<boolean> =>
+    new Promise(resolve => {
+      const proc = spawn(cmd, args, { shell: true, stdio: 'ignore' })
+      proc.on('close', (code) => resolve(code === 0))
+      proc.on('error', () => resolve(false))
+    })
+
+  const [gh, npx] = await Promise.all([
+    check('gh', ['--version']),
+    check('npx', ['--version'])
+  ])
+  return { gh, npx }
+}
+
 // === Check CLI Auth Status ===
 
-async function checkGitHubAuth(): Promise<boolean> {
+/**
+ * Get active gh account name + token.
+ * Parses `gh auth status` output to find the active account.
+ */
+async function getActiveGhAccount(): Promise<{ account: string; token: string } | null> {
+  // Get active account name from status output
+  const account = await new Promise<string | null>(resolve => {
+    const proc = spawn('gh', ['auth', 'status', '--hostname', 'github.com'], {
+      shell: true, stdio: ['ignore', 'pipe', 'pipe']
+    })
+    let output = ''
+    proc.stdout?.on('data', (d: Buffer) => { output += d.toString() })
+    proc.stderr?.on('data', (d: Buffer) => { output += d.toString() })
+    proc.on('close', (code) => {
+      if (code !== 0) return resolve(null)
+      // Parse: "✓ Logged in to github.com account USERNAME (keyring)" + "Active account: true"
+      const blocks = output.split(/\n\s*\n|(?=✓)/)
+      for (const block of blocks) {
+        if (block.includes('Active account: true')) {
+          const m = block.match(/account\s+(\S+)/)
+          if (m) return resolve(m[1])
+        }
+      }
+      // Fallback: single account (no "Active account" line in older gh versions)
+      const m = output.match(/account\s+(\S+)/)
+      resolve(m ? m[1] : null)
+    })
+    proc.on('error', () => resolve(null))
+  })
+  if (!account) return null
+
+  // Get token for the active account
+  const token = await new Promise<string | null>(resolve => {
+    const proc = spawn('gh', ['auth', 'token', '--hostname', 'github.com'], {
+      shell: true, stdio: ['ignore', 'pipe', 'pipe']
+    })
+    let out = ''
+    proc.stdout?.on('data', (d: Buffer) => { out += d.toString() })
+    proc.on('close', (code) => resolve(code === 0 ? out.trim() : null))
+    proc.on('error', () => resolve(null))
+  })
+  if (!token) return null
+
+  return { account, token }
+}
+
+// Cached token for MCP server
+let cachedGhToken: string | null = null
+
+export function getGhToken(): string | null {
+  return cachedGhToken
+}
+
+/**
+ * List all gh accounts logged in on github.com.
+ * Returns array of { account, active }.
+ */
+export async function listGhAccounts(): Promise<{ account: string; active: boolean }[]> {
   return new Promise(resolve => {
     const proc = spawn('gh', ['auth', 'status', '--hostname', 'github.com'], {
       shell: true, stdio: ['ignore', 'pipe', 'pipe']
     })
-    proc.on('close', (code) => resolve(code === 0))
-    proc.on('error', () => resolve(false))
+    let output = ''
+    proc.stdout?.on('data', (d: Buffer) => { output += d.toString() })
+    proc.stderr?.on('data', (d: Buffer) => { output += d.toString() })
+    proc.on('close', () => {
+      const accounts: { account: string; active: boolean }[] = []
+      // Each account block starts with ✓ and contains "account NAME" + "Active account: true/false"
+      const blocks = output.split(/(?=✓)/)
+      for (const block of blocks) {
+        const nameMatch = block.match(/account\s+(\S+)/)
+        if (nameMatch) {
+          const active = block.includes('Active account: true')
+          accounts.push({ account: nameMatch[1], active })
+        }
+      }
+      resolve(accounts)
+    })
+    proc.on('error', () => resolve([]))
   })
+}
+
+/**
+ * Switch active gh account and refresh cached token + MCP server.
+ */
+export async function switchGhAccount(account: string): Promise<void> {
+  // Run gh auth switch
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn('gh', ['auth', 'switch', '--user', account, '--hostname', 'github.com'], {
+      shell: true, stdio: 'ignore'
+    })
+    proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`gh auth switch failed (code ${code})`)))
+    proc.on('error', (e) => reject(e))
+  })
+
+  // Refresh token & connection state
+  const ghInfo = await getActiveGhAccount()
+  const conn = connections.get('github')
+  if (conn) {
+    conn.authenticated = !!ghInfo
+    conn.verified = !!ghInfo
+    conn.activeAccount = ghInfo?.account || null
+  }
+  cachedGhToken = ghInfo?.token || null
+
+  // Restart MCP server with new token
+  const { stopMcpServer, startMcpServer } = await import('../agent/mcp')
+  stopMcpServer('github')
+  if (cachedGhToken) {
+    startMcpServer('github').catch(err => console.error('[Aide] MCP github restart:', err))
+  }
+
+  // Notify renderer
+  const { BrowserWindow } = await import('electron')
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('aide:event', { type: 'connection:status', connections: getConnectionStatus() })
+  }
 }
 
 async function acceptWorkiqEula(): Promise<void> {
@@ -160,8 +286,16 @@ export function authenticateGitHub(): Promise<void> {
     proc.on('close', async (code) => {
       activeAuthProcess = null
       if (code === 0) {
+        // Fetch active account + token after successful login
+        const ghInfo = await getActiveGhAccount()
         const conn = connections.get('github')
-        if (conn) { conn.authenticated = true; conn.verified = true; conn.lastError = null }
+        if (conn) {
+          conn.authenticated = true
+          conn.verified = true
+          conn.lastError = null
+          conn.activeAccount = ghInfo?.account || null
+        }
+        if (ghInfo) cachedGhToken = ghInfo.token
         startMcpServer('github').catch(err => console.error('[Aide] MCP github start:', err))
         for (const win of BrowserWindow.getAllWindows()) {
           win.webContents.send('aide:event', { type: 'connection:status', connections: getConnectionStatus() })
@@ -169,7 +303,7 @@ export function authenticateGitHub(): Promise<void> {
         resolve()
       } else {
         const conn = connections.get('github')
-        if (conn) { conn.lastError = '认证失败'; conn.authenticated = false }
+        if (conn) { conn.lastError = '认证失败'; conn.authenticated = false; conn.activeAccount = null }
         for (const win of BrowserWindow.getAllWindows()) {
           win.webContents.send('aide:event', { type: 'connection:status', connections: getConnectionStatus() })
         }
@@ -290,14 +424,34 @@ export function authenticateMicrosoft(): Promise<void> {
 export async function disconnect(type: 'workiq' | 'github'): Promise<void> {
   const conn = connections.get(type)
   if (!conn) return
-  conn.authenticated = false
-  conn.verified = false
-  conn.lastError = null
 
   if (type === 'github') {
-    spawn('gh', ['auth', 'logout', '--hostname', 'github.com', '--yes'], { shell: true, stdio: 'ignore' })
+    // Logout active account, then re-check if another account remains
+    await new Promise<void>(resolve => {
+      const proc = spawn('gh', ['auth', 'logout', '--hostname', 'github.com', '--yes'], { shell: true, stdio: 'ignore' })
+      proc.on('close', () => resolve())
+      proc.on('error', () => resolve())
+    })
+    cachedGhToken = null
+    // Check if another account is still active
+    const remaining = await getActiveGhAccount()
+    if (remaining) {
+      conn.authenticated = true
+      conn.verified = true
+      conn.activeAccount = remaining.account
+      cachedGhToken = remaining.token
+    } else {
+      conn.authenticated = false
+      conn.verified = false
+      conn.activeAccount = null
+    }
+    conn.lastError = null
   } else if (type === 'workiq') {
     spawn('npx', ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { shell: true, stdio: 'ignore' })
+    conn.authenticated = false
+    conn.verified = false
+    conn.activeAccount = null
+    conn.lastError = null
   }
 
   const { stopMcpServer } = await import('../agent/mcp')
@@ -307,11 +461,16 @@ export async function disconnect(type: 'workiq' | 'github'): Promise<void> {
 // === Init (check CLI auth on startup) ===
 
 export async function initConnectionState(): Promise<void> {
-  const ghAuth = await checkGitHubAuth()
+  const now = new Date().toISOString()
+
+  const ghInfo = await getActiveGhAccount()
   const ghConn = connections.get('github')
   if (ghConn) {
-    ghConn.authenticated = ghAuth
-    ghConn.verified = ghAuth // gh auth status already validates the token
+    ghConn.authenticated = !!ghInfo
+    ghConn.verified = !!ghInfo
+    ghConn.activeAccount = ghInfo?.account || null
+    ghConn.lastPolledAt = now
+    if (ghInfo) cachedGhToken = ghInfo.token
   }
 
   const wiqAuth = await checkWorkiqAuth()
@@ -319,6 +478,7 @@ export async function initConnectionState(): Promise<void> {
   if (wiqConn) {
     wiqConn.authenticated = wiqAuth
     wiqConn.verified = wiqAuth // checkWorkiqAuth now does a real tools/list call
+    wiqConn.lastPolledAt = now
     if (wiqAuth) {
       // Ensure EULA is accepted for returning users
       await acceptWorkiqEula()
@@ -331,7 +491,10 @@ export async function initConnectionState(): Promise<void> {
 // === MCP Config (CLIs use their own cached auth, no env vars needed) ===
 
 export function getMcpEnv(type: 'workiq' | 'github'): Record<string, string> | null {
-  if (type === 'github') return {}
+  if (type === 'github') {
+    if (cachedGhToken) return { GITHUB_PERSONAL_ACCESS_TOKEN: cachedGhToken }
+    return {} // Will fall back to unauthenticated (rate-limited)
+  }
   if (type === 'workiq') return {}
   return null
 }

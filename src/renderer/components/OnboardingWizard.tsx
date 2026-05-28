@@ -11,12 +11,15 @@ interface Props {
 export function OnboardingWizard({ onComplete }: Props) {
   const [step, setStep] = useState<Step>('welcome')
   const [connections, setConnections] = useState<ConnectionStatus[]>([])
+  const [cliStatus, setCliStatus] = useState<{ gh: boolean; npx: boolean }>({ gh: true, npx: true })
 
   useEffect(() => {
     window.aide.connections.getStatus().then(setConnections)
+    window.aide.connections.checkCli().then(setCliStatus)
   }, [])
 
   const isConnected = (type: string) => connections.find(c => c.type === type)?.authenticated ?? false
+  const isVerified = (type: string) => connections.find(c => c.type === type)?.verified ?? false
 
   const refreshConnections = useCallback(async () => {
     const status = await window.aide.connections.getStatus()
@@ -25,6 +28,8 @@ export function OnboardingWizard({ onComplete }: Props) {
 
   const finish = useCallback(async () => {
     await window.aide.preferences.set({ onboardingComplete: true })
+    // Trigger world-sync immediately to bootstrap relations & projects
+    window.aide.jobs.run('world-sync').catch(() => {})
     onComplete()
   }, [onComplete])
 
@@ -54,6 +59,8 @@ export function OnboardingWizard({ onComplete }: Props) {
         {step === 'github' && (
           <GitHubStep
             connected={isConnected('github')}
+            activeAccount={connections.find(c => c.type === 'github')?.activeAccount || null}
+            ghInstalled={cliStatus.gh}
             onRefresh={refreshConnections}
             onNext={() => setStep('microsoft')}
             onSkip={() => setStep('microsoft')}
@@ -62,12 +69,13 @@ export function OnboardingWizard({ onComplete }: Props) {
         {step === 'microsoft' && (
           <MicrosoftStep
             connected={isConnected('workiq')}
+            verified={isVerified('workiq')}
             onRefresh={refreshConnections}
             onNext={() => setStep('done')}
             onSkip={() => setStep('done')}
           />
         )}
-        {step === 'done' && <DoneStep onFinish={finish} />}
+        {step === 'done' && <DoneStep onFinish={finish} allVerified={isVerified('github') || isVerified('workiq')} />}
 
         {/* Progress dots */}
         <div className="flex justify-center gap-2 mt-8">
@@ -90,8 +98,13 @@ export function OnboardingWizard({ onComplete }: Props) {
 function WelcomeStep({ onNext }: { onNext: () => void }) {
   return (
     <div className="text-center">
-      <div className="w-16 h-16 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto mb-6">
-        <Sparkles size={32} className="text-accent" />
+      <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-6 shadow-md">
+        <svg viewBox="0 0 512 512" className="w-full h-full">
+          <defs><linearGradient id="aide-ob" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0%" stopColor="#4A7FF7"/><stop offset="100%" stopColor="#3B5EE6"/></linearGradient></defs>
+          <rect width="512" height="512" rx="108" fill="url(#aide-ob)"/>
+          <path d="M256 96 L384 416 L328 416 L298 332 L214 332 L184 416 L128 416 Z M256 192 L228 296 L284 296 Z" fill="white"/>
+          <path d="M372 100 L386 132 L418 146 L386 160 L372 192 L358 160 L326 146 L358 132 Z" fill="white" opacity="0.92"/>
+        </svg>
       </div>
       <h1 className="text-[22px] font-bold text-text-primary mb-3">欢迎使用 Aide</h1>
       <p className="text-[14px] text-text-secondary leading-relaxed mb-8">
@@ -111,19 +124,22 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
 
 // === GitHub (via gh CLI) ===
 
-function GitHubStep({ connected, onRefresh, onNext, onSkip }: {
+function GitHubStep({ connected, activeAccount, ghInstalled, onRefresh, onNext, onSkip }: {
   connected: boolean
+  activeAccount: string | null
+  ghInstalled: boolean
   onRefresh: () => Promise<void>
   onNext: () => void
   onSkip: () => void
 }) {
-  const [status, setStatus] = useState<'idle' | 'waiting' | 'success' | 'error'>('idle')
+  const [status, setStatus] = useState<'idle' | 'waiting' | 'success' | 'error' | 'no-cli'>('idle')
   const [userCode, setUserCode] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (connected) setStatus('success')
-  }, [connected])
+    else if (!ghInstalled) setStatus('no-cli')
+  }, [connected, ghInstalled])
 
   // Listen for auth-progress and connection:status events
   useEffect(() => {
@@ -224,7 +240,7 @@ function GitHubStep({ connected, onRefresh, onNext, onSkip }: {
       {status === 'success' && (
         <div className="space-y-4">
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-success/10 text-success rounded-xl text-[13px] font-medium">
-            <Check size={16} /> GitHub 已连接
+            <Check size={16} /> GitHub 已连接{activeAccount ? ` · ${activeAccount}` : ''}
           </div>
           <div>
             <button
@@ -239,13 +255,30 @@ function GitHubStep({ connected, onRefresh, onNext, onSkip }: {
 
       {status === 'error' && (
         <div className="space-y-3">
-          <p className="text-[12px] text-danger">连接失败，请确保已安装 gh CLI。</p>
+          <p className="text-[12px] text-danger">连接失败，请确保已安装 gh CLI 并重试。</p>
           <button
             onClick={() => { setStatus('idle'); setUserCode(null) }}
             className="inline-flex items-center gap-2 px-5 py-2.5 bg-zinc-800 text-white text-[13px] font-medium rounded-xl hover:bg-zinc-700 transition-colors"
           >
             <Github size={16} /> 重试
           </button>
+        </div>
+      )}
+
+      {status === 'no-cli' && (
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-surface-1 border border-edge text-left">
+            <p className="text-[13px] text-text-primary font-medium mb-2">需要安装 GitHub CLI</p>
+            <p className="text-[12px] text-text-secondary leading-relaxed mb-3">
+              Aide 通过 <code className="text-[11px] bg-surface-2 px-1 py-0.5 rounded">gh</code> 命令行工具连接 GitHub。请先安装：
+            </p>
+            <div className="space-y-1.5 text-[12px] text-text-secondary">
+              <p>• Windows: <code className="bg-surface-2 px-1 py-0.5 rounded text-[11px]">winget install GitHub.cli</code></p>
+              <p>• macOS: <code className="bg-surface-2 px-1 py-0.5 rounded text-[11px]">brew install gh</code></p>
+              <p>• 或访问 <a href="https://cli.github.com" className="text-accent hover:underline" onClick={e => { e.preventDefault(); window.open('https://cli.github.com') }}>cli.github.com</a></p>
+            </div>
+          </div>
+          <p className="text-[11px] text-text-tertiary">安装后重启 Aide 即可连接</p>
         </div>
       )}
 
@@ -260,19 +293,20 @@ function GitHubStep({ connected, onRefresh, onNext, onSkip }: {
 
 // === Microsoft 365 (via workiq CLI) ===
 
-function MicrosoftStep({ connected, onRefresh, onNext, onSkip }: {
+function MicrosoftStep({ connected, verified, onRefresh, onNext, onSkip }: {
   connected: boolean
+  verified: boolean
   onRefresh: () => Promise<void>
   onNext: () => void
   onSkip: () => void
 }) {
-  const [status, setStatus] = useState<'idle' | 'waiting' | 'success' | 'error'>('idle')
+  const [status, setStatus] = useState<'idle' | 'waiting' | 'success' | 'partial' | 'error'>('idle')
   const [userCode, setUserCode] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
-    if (connected) setStatus('success')
-  }, [connected])
+    if (connected) setStatus(verified ? 'success' : 'partial')
+  }, [connected, verified])
 
   // Listen for auth-progress and connection:status events
   useEffect(() => {
@@ -288,7 +322,7 @@ function MicrosoftStep({ connected, onRefresh, onNext, onSkip }: {
       if (event.type === 'connection:status') {
         const ms = event.connections.find(c => c.type === 'workiq')
         if (ms?.authenticated) {
-          setStatus(ms.verified ? 'success' : 'success')
+          setStatus(ms.verified ? 'success' : 'partial')
           onRefresh()
         }
       }
@@ -386,6 +420,23 @@ function MicrosoftStep({ connected, onRefresh, onNext, onSkip }: {
         </div>
       )}
 
+      {status === 'partial' && (
+        <div className="space-y-4">
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-warning/10 text-warning rounded-xl text-[13px] font-medium">
+            <Shield size={16} /> 已登录，权限验证中
+          </div>
+          <p className="text-[12px] text-text-tertiary">已登录 Microsoft 账号，但自动收集功能暂不可用。可继续使用，稍后在设置中重试。</p>
+          <div>
+            <button
+              onClick={onNext}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-[13px] font-medium rounded-xl hover:bg-accent/90 transition-colors"
+            >
+              继续 <ArrowRight size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {status === 'error' && (
         <div className="space-y-3">
           <p className="text-[12px] text-danger">连接失败，请重试。</p>
@@ -398,7 +449,7 @@ function MicrosoftStep({ connected, onRefresh, onNext, onSkip }: {
         </div>
       )}
 
-      {status !== 'success' && (
+      {status !== 'success' && status !== 'partial' && (
         <button onClick={onSkip} className="block mx-auto mt-5 text-[12px] text-text-tertiary hover:text-text-secondary transition-colors">
           稍后再说
         </button>
@@ -409,15 +460,17 @@ function MicrosoftStep({ connected, onRefresh, onNext, onSkip }: {
 
 // === Done ===
 
-function DoneStep({ onFinish }: { onFinish: () => void }) {
+function DoneStep({ onFinish, allVerified }: { onFinish: () => void; allVerified: boolean }) {
   return (
     <div className="text-center">
       <div className="w-16 h-16 rounded-2xl bg-success/10 flex items-center justify-center mx-auto mb-6">
         <Check size={32} className="text-success" />
       </div>
-      <h2 className="text-[20px] font-bold text-text-primary mb-3">设置完成</h2>
+      <h2 className="text-[20px] font-bold text-text-primary mb-3">基础设置完成</h2>
       <p className="text-[14px] text-text-secondary leading-relaxed mb-8">
-        Aide 已准备就绪。你随时可以在设置中修改连接配置。
+        {allVerified
+          ? 'Aide 已准备就绪。你随时可以在设置中修改连接配置。'
+          : '基础设置完成，部分连接稍后可在设置中补充或重试。'}
       </p>
       <button
         onClick={onFinish}

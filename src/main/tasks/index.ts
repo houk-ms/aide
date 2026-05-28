@@ -11,6 +11,7 @@ function rowToTask(row: Record<string, unknown>): Task {
     priority: row.priority as Priority,
     source: {
       type: row.source_type as Task['source']['type'],
+      connectionId: row.source_connection_id as string | undefined,
       externalId: row.source_external_id as string | undefined,
       externalUrl: row.source_external_url as string | undefined
     },
@@ -52,9 +53,9 @@ export function listTasks(filter?: TaskFilter): Task[] {
     params.push(new Date().toISOString())
   }
 
-  // Sort: high > medium > low, then by created_at desc
+  // Sort: p0 > p1 > p2, then urgent due dates, then newest first
   sql += ` ORDER BY 
-    CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
+    CASE priority WHEN 'p0' THEN 0 WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 ELSE 3 END,
     CASE WHEN due_date IS NOT NULL AND due_date <= date('now', '+1 day') THEN 0 ELSE 1 END,
     created_at DESC`
 
@@ -68,7 +69,12 @@ export function getTask(id: string): Task | null {
   return row ? rowToTask(row) : null
 }
 
-export function createTask(input: CreateTaskInput): Task {
+export interface CreateTaskResult {
+  task: Task
+  deduplicated: boolean
+}
+
+export function createTask(input: CreateTaskInput): CreateTaskResult {
   const db = getDb()
   const now = new Date().toISOString()
   const id = uuid()
@@ -76,29 +82,25 @@ export function createTask(input: CreateTaskInput): Task {
   // De-dup: check externalId first
   if (input.source.externalId) {
     const existing = findTaskByExternalId(input.source.externalId)
-    if (existing) return existing
+    if (existing) return { task: existing, deduplicated: true }
   }
 
-  // De-dup: content similarity check
-  const similar = findSimilarTask(input.title)
-  if (similar) return similar
+  // De-dup: content similarity check (threshold 0.75 for title, also checks description)
+  const similar = findSimilarTask(input.title, 0.75, input.description)
+  if (similar) return { task: similar, deduplicated: true }
 
-  // Auto-calculate priority if not explicitly set
-  const priority = input.priority || calculatePriority({
-    relatedRelationIds: input.relatedRelationIds,
-    dueDate: input.dueDate,
-    sourceType: input.source.type
-  })
+  const priority = input.priority || 'p1'
 
   db.prepare(`
-    INSERT INTO tasks (id, title, description, status, priority, source_type, source_external_id, source_external_url, project_id, related_relation_ids, created_at, updated_at, due_date)
-    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO tasks (id, title, description, status, priority, source_type, source_connection_id, source_external_id, source_external_url, project_id, related_relation_ids, created_at, updated_at, due_date)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.title,
     input.description || '',
     priority,
     input.source.type,
+    input.source.connectionId || null,
     input.source.externalId || null,
     input.source.externalUrl || null,
     input.projectId || null,
@@ -108,7 +110,7 @@ export function createTask(input: CreateTaskInput): Task {
     input.dueDate || null
   )
 
-  return getTask(id)!
+  return { task: getTask(id)!, deduplicated: false }
 }
 
 export function updateTask(id: string, changes: Partial<Task>): Task {
@@ -179,22 +181,65 @@ export function findTaskByExternalId(externalId: string): Task | null {
 // Before creating a task, check if a very similar one already exists.
 // Uses simple token overlap (Jaccard similarity) as FTS5 can't do this well.
 
-export function findSimilarTask(title: string, threshold: number = 0.6): Task | null {
+export function findSimilarTask(title: string, threshold: number = 0.6, description?: string): Task | null {
   const db = getDb()
+  // Check active tasks AND recently completed/cancelled tasks (within 7 days)
+  // This prevents re-creating tasks that were just completed
   const activeTasks = db.prepare(
-    "SELECT * FROM tasks WHERE status IN ('pending', 'in_progress')"
+    `SELECT * FROM tasks WHERE status IN ('pending', 'in_progress')
+     UNION ALL
+     SELECT * FROM tasks WHERE status IN ('completed', 'cancelled')
+       AND completed_at >= datetime('now', '-7 days')`
   ).all() as Record<string, unknown>[]
 
   const inputTokens = tokenize(title)
+  const inputDescTokens = description ? tokenize(description) : null
+  const inputEntities = extractEntities(title + (description ? ' ' + description : ''))
 
   for (const row of activeTasks) {
-    const existingTokens = tokenize(row.title as string)
-    const similarity = jaccardSimilarity(inputTokens, existingTokens)
-    if (similarity >= threshold) {
+    const existingTitle = row.title as string
+    const existingDesc = (row.description as string) || ''
+
+    // 1. Entity match: if both share specific identifiers (PR #, issue #, email subject key), it's the same task
+    if (inputEntities.size > 0) {
+      const existingEntities = extractEntities(existingTitle + ' ' + existingDesc)
+      const sharedEntities = [...inputEntities].filter(e => existingEntities.has(e))
+      if (sharedEntities.length > 0) {
+        return rowToTask(row)
+      }
+    }
+
+    // 2. Token similarity on title
+    const existingTokens = tokenize(existingTitle)
+    const titleSim = jaccardSimilarity(inputTokens, existingTokens)
+    if (titleSim >= threshold) {
       return rowToTask(row)
+    }
+
+    // 3. Lower title threshold if description also matches well
+    if (titleSim >= 0.4 && inputDescTokens && existingDesc) {
+      const descSim = jaccardSimilarity(inputDescTokens, tokenize(existingDesc))
+      if (descSim >= 0.5) {
+        return rowToTask(row)
+      }
     }
   }
   return null
+}
+
+// Extract key identifiers that uniquely identify a work item
+function extractEntities(text: string): Set<string> {
+  const entities = new Set<string>()
+  // PR/Issue numbers: #123, PR #456, issue #789
+  const numRefs = text.match(/(?:PR|pr|issue|Issue|#)\s*#?(\d{2,})/g)
+  if (numRefs) for (const r of numRefs) entities.add(r.toLowerCase().replace(/\s+/g, ''))
+  // GitHub-style refs: owner/repo#123
+  const ghRefs = text.match(/[\w-]+\/[\w-]+#\d+/g)
+  if (ghRefs) for (const r of ghRefs) entities.add(r.toLowerCase())
+  // Email message IDs or thread subjects in angle brackets
+  const msgIds = text.match(/<[^>]+@[^>]+>/g)
+  if (msgIds) for (const r of msgIds) entities.add(r.toLowerCase())
+  return entities
 }
 
 function tokenize(text: string): Set<string> {
@@ -228,36 +273,4 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 // === Priority Calculation ===
 // Factors: relation role, deadline proximity, explicit urgency
 
-export function calculatePriority(params: {
-  relatedRelationIds?: string[]
-  dueDate?: string
-  sourceType?: string
-}): 'high' | 'medium' | 'low' {
-  let score = 0
 
-  // Deadline factor
-  if (params.dueDate) {
-    const daysUntilDue = (new Date(params.dueDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-    if (daysUntilDue <= 0) score += 3        // Overdue
-    else if (daysUntilDue <= 1) score += 2   // Due today/tomorrow
-    else if (daysUntilDue <= 3) score += 1   // Due this week
-  }
-
-  // Relation role factor
-  if (params.relatedRelationIds && params.relatedRelationIds.length > 0) {
-    // Check if any related person is a manager — boost priority
-    const db = getDb()
-    for (const relId of params.relatedRelationIds) {
-      const rel = db.prepare('SELECT role FROM relations WHERE id = ?').get(relId) as { role: string } | undefined
-      if (rel?.role === 'manager') { score += 2; break }
-      if (rel?.role === 'stakeholder') { score += 1; break }
-    }
-  }
-
-  // Source type factor
-  if (params.sourceType === 'calendar') score += 1 // Calendar events are time-bound
-
-  if (score >= 3) return 'high'
-  if (score >= 1) return 'medium'
-  return 'low'
-}

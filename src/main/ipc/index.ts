@@ -2,8 +2,8 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { listTasks, getTask, createTask, updateTask, markTaskSeen, snoozeTask } from '../tasks'
 import { sendMessage, getChatHistory, confirmAction, triggerFirstMessage, listModels, getSelectedModel, setSelectedModel, stopStream, resetSession } from '../agent'
 import { getL0Content, setL0Content, searchMemory, listMemory, updateMemory, deleteMemory } from '../memory'
-import { listJobs, toggleJob, getJobLastSummary, createJob, updateJob, deleteJob } from '../jobs'
-import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft } from '../connections'
+import { listJobs, toggleJob, getJobLastSummary, createJob, updateJob, deleteJob, runJob } from '../jobs'
+import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft, checkCliAvailability, listGhAccounts, switchGhAccount } from '../connections'
 import { listProjects, getProject, createProject, updateProject, deleteProject } from '../projects'
 import { listRelations, getRelation, createRelation, updateRelation, deleteRelation } from '../relations'
 import { getPreferences, setPreferences } from '../preferences'
@@ -13,7 +13,7 @@ export function registerIpcHandlers(): void {
   // === Tasks ===
   ipcMain.handle('tasks:list', (_, filter) => listTasks(filter))
   ipcMain.handle('tasks:get', (_, id) => getTask(id))
-  ipcMain.handle('tasks:create', (_, input) => createTask(input))
+  ipcMain.handle('tasks:create', (_, input) => createTask(input).task)
   ipcMain.handle('tasks:update', (_, id, changes) => updateTask(id, changes))
   ipcMain.handle('tasks:markSeen', (_, id) => markTaskSeen(id))
   ipcMain.handle('tasks:snooze', (_, id, until) => snoozeTask(id, until))
@@ -53,15 +53,19 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('jobs:list', () => listJobs())
   ipcMain.handle('jobs:toggle', (_, id, enabled) => toggleJob(id, enabled))
   ipcMain.handle('jobs:getLastSummary', (_, id) => getJobLastSummary(id))
+  ipcMain.handle('jobs:run', (_, id) => runJob(id))
   ipcMain.handle('jobs:create', (_, data) => createJob(data))
   ipcMain.handle('jobs:update', (_, id, data) => updateJob(id, data))
   ipcMain.handle('jobs:delete', (_, id) => deleteJob(id))
 
   // === Connections ===
   ipcMain.handle('connections:getStatus', () => getConnectionStatus())
+  ipcMain.handle('connections:checkCli', () => checkCliAvailability())
   ipcMain.handle('connections:authenticateGitHub', () => authenticateGitHub())
   ipcMain.handle('connections:authenticateMicrosoft', () => authenticateMicrosoft())
   ipcMain.handle('connections:disconnect', (_, type) => disconnect(type))
+  ipcMain.handle('connections:listGhAccounts', () => listGhAccounts())
+  ipcMain.handle('connections:switchGhAccount', (_, account) => switchGhAccount(account))
 
   // === Projects ===
   ipcMain.handle('projects:list', () => listProjects())

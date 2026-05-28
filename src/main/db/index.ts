@@ -34,6 +34,7 @@ export function getDb(): DatabaseInstance {
     db.pragma('journal_mode = WAL')
     db.pragma('foreign_keys = ON')
     initSchema(db)
+    runMigrations(db)
   }
   return db
 }
@@ -45,8 +46,9 @@ function initSchema(db: DatabaseInstance): void {
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'pending',
-      priority TEXT NOT NULL DEFAULT 'medium',
+      priority TEXT NOT NULL DEFAULT 'p1',
       source_type TEXT NOT NULL,
+      source_connection_id TEXT,
       source_external_id TEXT,
       source_external_url TEXT,
       project_id TEXT,
@@ -112,6 +114,7 @@ function initSchema(db: DatabaseInstance): void {
       tech_stack TEXT,
       team TEXT NOT NULL DEFAULT '[]',
       notes TEXT,
+      source TEXT NOT NULL DEFAULT 'user',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -128,6 +131,7 @@ function initSchema(db: DatabaseInstance): void {
       expertise TEXT NOT NULL DEFAULT '[]',
       communication_style TEXT,
       notes TEXT,
+      source TEXT NOT NULL DEFAULT 'user',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -170,6 +174,49 @@ function initSchema(db: DatabaseInstance): void {
   }
 }
 
+function runMigrations(db: DatabaseInstance): void {
+  // Add source column to projects/relations for existing DBs
+  const projCols = db.prepare("PRAGMA table_info(projects)").all() as { name: string }[]
+  if (!projCols.some(c => c.name === 'source')) {
+    db.exec("ALTER TABLE projects ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+  }
+  const relCols = db.prepare("PRAGMA table_info(relations)").all() as { name: string }[]
+  if (!relCols.some(c => c.name === 'source')) {
+    db.exec("ALTER TABLE relations ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+  }
+  // Add source_connection_id to tasks
+  const taskCols = db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]
+  if (!taskCols.some(c => c.name === 'source_connection_id')) {
+    db.exec("ALTER TABLE tasks ADD COLUMN source_connection_id TEXT")
+  }
+  // Add last_polled_at to connections tracking
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS connection_state (
+      connection_id TEXT PRIMARY KEY,
+      last_polled_at TEXT,
+      poll_cursor TEXT
+    )
+  `)
+  // Migrate priority values: high→p0, medium→p1, low→p2
+  db.exec(`
+    UPDATE tasks SET priority = 'p0' WHERE priority = 'high';
+    UPDATE tasks SET priority = 'p1' WHERE priority = 'medium';
+    UPDATE tasks SET priority = 'p2' WHERE priority = 'low';
+  `)
+}
+
+const DEFAULT_PERIODIC_POLL_INSTRUCTION = `检查时间窗口内（见上方时间标记）的新邮件、Teams 消息和 GitHub 通知。用 ask_work_iq 时在 prompt 中指定时间范围。
+
+对需要我处理的事项创建 Task（附 sourceId）。同时检查已有任务是否已被自行解决（邮件已回、PR 已 merge 等），是则标记 completed。`
+
+const DEFAULT_WORLD_SYNC_INSTRUCTION = `维护联系人和项目列表。不创建任务。
+
+联系人：查过去一周 1:1 互动的人（单独邮件、单独回复、1:1 聊天）。只为这些人建/更联系人。跳过群发CC、只出现一次的人。
+
+项目：查近期有 commit/PR/issue 活动的 GitHub 仓库。确保对应 project 存在（必须有 repo URL）。
+
+淘汰：3个月无互动的联系人 → inactive。无活动的项目 → archived。`
+
 function seedDefaultJobs(db: DatabaseInstance): void {
   const insert = db.prepare(`
     INSERT INTO jobs (id, name, cron, instruction, enabled)
@@ -180,15 +227,15 @@ function seedDefaultJobs(db: DatabaseInstance): void {
     'morning-briefing',
     '每日开工简报',
     '0 9 * * 1-5',
-    '检查所有新邮件、Teams 消息、GitHub 通知和今天的日历事件。识别需要用户处理的事项，为每个创建 Task。生成今日优先级建议。',
+    '检查今天的日历事件、新邮件、Teams 消息和 GitHub 通知。为需要我处理的事项创建 Task（附 sourceId），按优先级排序给出今日建议。',
     1
   )
 
   insert.run(
     'periodic-poll',
     '定时轮询',
-    '*/15 * * * *',
-    '检查是否有新的未读邮件、Teams 消息或 GitHub 通知。如果有需要用户处理的新事项，创建 Task。',
+    '0 * * * *',
+    DEFAULT_PERIODIC_POLL_INSTRUCTION,
     1
   )
 
@@ -196,7 +243,15 @@ function seedDefaultJobs(db: DatabaseInstance): void {
     'daily-reconcile',
     '下班前回顾',
     '0 18 * * 1-5',
-    '回顾今天的所有信息流。检查是否有遗漏的任务需要补建。检查已完成但未标记的任务。对超过 7 天未互动的低优先级任务提出清理建议。生成今日工作日报。',
+    '回顾今天的任务状态。将已确认完成但未标记的任务标为 completed。对超过 7 天未动的 P2 任务建议清理。生成简短日报总结。',
+    1
+  )
+
+  insert.run(
+    'world-sync',
+    '人脉与项目同步',
+    '0 10 * * 1',
+    DEFAULT_WORLD_SYNC_INSTRUCTION,
     1
   )
 }

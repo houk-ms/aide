@@ -88,20 +88,47 @@ export function searchMemory(query: string, limit: number = 10): MemoryEntry[] {
   const hasChinese = /[\u4e00-\u9fff]/.test(query)
 
   if (hasChinese) {
-    // For Chinese, use LIKE-based search since FTS5 unicode61 can't tokenize Chinese properly
-    const keywords = query.replace(/[^\u4e00-\u9fff\w]+/g, ' ').split(/\s+/).filter(w => w.length > 0)
-    if (keywords.length === 0) return []
+    // For Chinese, use LIKE-based search with bigram tokenization for better recall
+    // Split into Chinese segments and non-Chinese words
+    const tokens: string[] = []
+    // Extract continuous Chinese segments and English words separately
+    const chineseSegments = query.match(/[\u4e00-\u9fff]{2,}/g) || []
+    const englishWords = query.match(/[a-zA-Z0-9_]{2,}/g) || []
 
-    const conditions = keywords.map(() => 'me.content LIKE ?').join(' OR ')
-    const params = keywords.map(k => `%${k}%`)
+    // For Chinese segments: use the whole segment if ≤3 chars, else generate bigrams for broader matching
+    for (const seg of chineseSegments) {
+      if (seg.length <= 3) {
+        tokens.push(seg)
+      } else {
+        // Keep the full segment for exact match priority
+        tokens.push(seg)
+        // Also add bigrams for partial match
+        for (let i = 0; i < seg.length - 1; i++) {
+          tokens.push(seg.slice(i, i + 2))
+        }
+      }
+    }
+    // Add English words directly
+    tokens.push(...englishWords)
+
+    // Deduplicate
+    const uniqueTokens = [...new Set(tokens)]
+    if (uniqueTokens.length === 0) return []
+
+    // Weight: full phrases match more conditions than bigrams → natural ranking
+    const conditions = uniqueTokens.map(() => 'me.content LIKE ?').join(' OR ')
+    const params = uniqueTokens.map(k => `%${k}%`)
+
+    // Order by number of matching conditions (relevance) + recency
+    const matchScore = uniqueTokens.map(() => `(CASE WHEN me.content LIKE ? THEN 1 ELSE 0 END)`).join(' + ')
 
     const rows = db.prepare(`
-      SELECT me.*
+      SELECT me.*, (${matchScore}) AS relevance
       FROM memory_entries me
       WHERE (${conditions}) AND me.status = 'active' AND me.layer IN ('L1', 'L2')
-      ORDER BY me.updated_at DESC
+      ORDER BY relevance DESC, me.updated_at DESC
       LIMIT ?
-    `).all(...params, limit) as Record<string, unknown>[]
+    `).all(...params, ...params, limit) as Record<string, unknown>[]
 
     if (rows.length > 0) {
       const ids = rows.map(r => r.id as string)

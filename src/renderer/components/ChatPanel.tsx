@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, Paperclip, Copy, CheckCheck, Square } from 'lucide-react'
+import remarkGfm from 'remark-gfm'
+import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Wrench, Loader2 } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useChatStore } from '../stores/chatStore'
-import type { ChatMessage, PendingAction, ModelInfo } from '@shared/types'
+import type { ChatMessage, PendingAction, ModelInfo, ToolCallRecord } from '@shared/types'
 
 interface Attachment {
   id: string
@@ -18,7 +19,7 @@ export function ChatPanel() {
   const tasks = useTaskStore(s => s.tasks)
   const selectTask = useTaskStore(s => s.selectTask)
   const goHome = useTaskStore(s => s.goHome)
-  const { messages, streamingContent, isStreaming, fetchHistory, sendMessage, stopStream, modifyDraft, setModifyDraft } = useChatStore()
+  const { messages, streamingContent, isStreaming, fetchHistory, sendMessage, stopStream, modifyDraft, setModifyDraft, toolCalls } = useChatStore()
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelInfo[]>([])
   const [selectedModel, setSelectedModel] = useState('')
@@ -141,17 +142,19 @@ export function ChatPanel() {
 
           {messages.map(msg => <MessageBubble key={msg.id} message={msg} />)}
 
-          {isStreaming && (
+          {/* Agent's current turn: tool calls + streaming content together */}
+          {(toolCalls.length > 0 || isStreaming) && (
             <div className="flex gap-3 anim-fade-up">
               <AgentAvatar />
               <div className="flex-1 min-w-0 pt-0.5">
-                {streamingContent ? (
-                  <div className="text-[14px] leading-[1.7] text-text-secondary prose prose-sm max-w-none">
-                    <ReactMarkdown>{streamingContent}</ReactMarkdown>
+                {toolCalls.length > 0 && <ToolCallsRow calls={toolCalls} />}
+                {isStreaming && streamingContent ? (
+                  <div className="text-[14px] leading-[1.7] text-text-secondary prose prose-sm max-w-none mt-1.5">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
                   </div>
-                ) : (
+                ) : isStreaming && !streamingContent && toolCalls.every(c => c.status !== 'running') ? (
                   <TypingIndicator />
-                )}
+                ) : null}
               </div>
             </div>
           )}
@@ -324,10 +327,13 @@ export function ChatPanel() {
 /* === Task Header === */
 
 function TaskHeader({ task, onBack }: {
-  task: { id: string; title: string; status: string; priority: string; description: string; source: { type: string; externalUrl?: string }; dueDate: string | null; relatedRelationIds: string[] }
+  task: { id: string; title: string; status: string; priority: string; description: string; source: { type: string; externalUrl?: string }; dueDate: string | null; relatedRelationIds: string[]; projectId: string | null }
   onBack: () => void
 }) {
   const { completeTask, cancelTask } = useTaskStore()
+
+  const sourceLabel: Record<string, string> = { email: '邮件', github: 'GitHub', teams: 'Teams', calendar: '日历', user: '自建', agent: 'Agent' }
+  const statusLabel: Record<string, string> = { pending: '待处理', in_progress: '处理中', completed: '已完成', cancelled: '已取消' }
 
   return (
     <header className="shrink-0">
@@ -348,15 +354,17 @@ function TaskHeader({ task, onBack }: {
       <div className="px-5 pb-2 flex items-center gap-2 text-[12px] text-text-tertiary flex-wrap">
         <PriorityBadge priority={task.priority} />
         <span className="text-edge">·</span>
-        <span>{task.source.type}</span>
+        <span>{sourceLabel[task.source.type] || task.source.type}</span>
         {task.source.externalUrl && (
           <a href={task.source.externalUrl} className="text-accent hover:underline" target="_blank" rel="noopener">↗</a>
         )}
+        <span className="text-edge">·</span>
+        <span className={task.status === 'in_progress' ? 'text-accent' : ''}>{statusLabel[task.status] || task.status}</span>
         {task.dueDate && (
           <>
             <span className="text-edge">·</span>
-            <span className={new Date(task.dueDate) < new Date() ? 'text-danger' : ''}>
-              {new Date(task.dueDate).toLocaleDateString('zh-CN')}
+            <span className={new Date(task.dueDate) < new Date() ? 'text-danger font-medium' : ''}>
+              {getDueLabel(task.dueDate)}
             </span>
           </>
         )}
@@ -391,10 +399,10 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               : 'text-text-secondary'
           }`}>
             {isUser ? (
-              <div className="whitespace-pre-wrap break-words">{message.content}</div>
+              <div className="whitespace-pre-wrap break-words select-text">{message.content}</div>
             ) : (
-              <div className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                <ReactMarkdown>{message.content}</ReactMarkdown>
+              <div className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 select-text">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
               </div>
             )}
           </div>
@@ -405,8 +413,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <div className={`flex items-center gap-2 mt-1 ${isUser ? 'flex-row-reverse' : ''}`}>
             <button
               onClick={handleCopy}
-              className="opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-all"
-              title="复制"
+              className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors"
+              title="复制全部"
             >
               {copied ? <CheckCheck size={13} className="text-success" /> : <Copy size={13} />}
             </button>
@@ -433,30 +441,112 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
 function ActionCard({ action, onConfirm }: { action: PendingAction; onConfirm: (id: string, decision: 'confirm' | 'modify' | 'cancel', mod?: string) => Promise<void> }) {
   const details = action.details || {}
-  const detailEntries = Object.entries(details).filter(([k]) => !['kind', 'id'].includes(k))
+  const toolName = action.toolName || String(details.kind || '')
+  const d = (key: string): string => {
+    const v = details[key]
+    if (v == null) return ''
+    return typeof v === 'string' ? v : JSON.stringify(v)
+  }
 
-  return (
-    <div className="mt-2.5 p-3 rounded-xl bg-surface-1 border border-edge">
-      <p className="text-[13px] text-text-secondary mb-1.5">{action.description}</p>
-      {detailEntries.length > 0 && (
-        <div className="mb-2.5 p-2 rounded-lg bg-surface-2/60 border border-edge-subtle text-[12px] text-text-tertiary space-y-0.5 font-mono">
-          {detailEntries.map(([key, val]) => (
+  // Tool-type specific rendering
+  const renderDetails = () => {
+    // Email actions
+    if (toolName.includes('send_email') || toolName.includes('reply_email') || toolName.includes('forward_email')) {
+      return (
+        <div className="mb-2.5 space-y-2 text-[13px]">
+          {d('to') && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">收件人</span><span className="text-text-primary font-medium">{d('to')}</span></div>}
+          {d('cc') && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">抄送</span><span className="text-text-secondary">{d('cc')}</span></div>}
+          {d('subject') && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">主题</span><span className="text-text-primary">{d('subject')}</span></div>}
+          {d('body') && (
+            <div className="mt-2 p-3 rounded-lg bg-surface-2/60 border border-edge-subtle text-[13px] text-text-secondary leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+              {d('body')}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    // Teams/chat actions
+    if (toolName.includes('message_work_iq') || toolName.includes('teams')) {
+      return (
+        <div className="mb-2.5 space-y-2 text-[13px]">
+          {(d('chatId') || d('channel')) && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">目标</span><span className="text-text-primary font-medium">{d('channel') || d('chatId')}</span></div>}
+          {d('content') && (
+            <div className="mt-2 p-3 rounded-lg bg-surface-2/60 border border-edge-subtle text-[13px] text-text-secondary leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+              {d('content')}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    // GitHub actions
+    if (toolName.includes('issue_comment') || toolName.includes('pull_request_review') || toolName.includes('github')) {
+      const eventVal = d('event')
+      return (
+        <div className="mb-2.5 space-y-2 text-[13px]">
+          {d('repo') && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">仓库</span><span className="text-text-primary font-mono text-[12px]">{d('repo')}</span></div>}
+          {(d('issue_number') || d('pull_number')) && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">编号</span><span className="text-text-primary">#{d('issue_number') || d('pull_number')}</span></div>}
+          {eventVal && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">操作</span><span className="text-text-primary">{eventVal === 'APPROVE' ? '批准' : eventVal === 'REQUEST_CHANGES' ? '请求修改' : '评论'}</span></div>}
+          {(d('body') || d('comment')) && (
+            <div className="mt-2 p-3 rounded-lg bg-surface-2/60 border border-edge-subtle text-[13px] text-text-secondary leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+              {d('body') || d('comment')}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    // Project/Relation management
+    if (toolName.includes('manage_project') || toolName.includes('manage_relation')) {
+      const entries = Object.entries(details).filter(([k]) => !['kind', 'id', 'action'].includes(k))
+      const actionVal = d('action')
+      return entries.length > 0 ? (
+        <div className="mb-2.5 space-y-1.5 text-[13px]">
+          {actionVal && <div className="flex gap-2"><span className="text-text-tertiary shrink-0 w-12">操作</span><span className="text-text-primary">{actionVal === 'create' ? '新建' : '更新'}</span></div>}
+          {entries.map(([key, val]) => (
             <div key={key} className="flex gap-2">
-              <span className="text-text-tertiary/70 shrink-0">{key}:</span>
+              <span className="text-text-tertiary shrink-0 w-12">{key}</span>
               <span className="text-text-secondary break-all">{typeof val === 'string' ? val : JSON.stringify(val)}</span>
             </div>
           ))}
         </div>
-      )}
+      ) : null
+    }
+
+    // Fallback: generic key-value display (non-monospace)
+    const entries = Object.entries(details).filter(([k]) => !['kind', 'id'].includes(k))
+    return entries.length > 0 ? (
+      <div className="mb-2.5 p-2.5 rounded-lg bg-surface-2/60 border border-edge-subtle text-[12px] text-text-tertiary space-y-1">
+        {entries.map(([key, val]) => (
+          <div key={key} className="flex gap-2">
+            <span className="text-text-tertiary/70 shrink-0">{key}:</span>
+            <span className="text-text-secondary break-all">{typeof val === 'string' ? val : JSON.stringify(val)}</span>
+          </div>
+        ))}
+      </div>
+    ) : null
+  }
+
+  // Context-aware button labels
+  const confirmLabel = toolName.includes('email') || toolName.includes('forward') ? '确认发送'
+    : toolName.includes('message') || toolName.includes('teams') ? '确认发送'
+    : toolName.includes('review') || toolName.includes('comment') ? '确认提交'
+    : '确认执行'
+
+  return (
+    <div className="mt-2.5 p-3.5 rounded-xl bg-surface-1 border border-edge">
+      <p className="text-[13px] text-text-secondary mb-2.5 font-medium">{action.description}</p>
+      {renderDetails()}
       <div className="flex items-center gap-2">
         <button onClick={() => onConfirm(action.id, 'confirm')} className="h-7 px-3 rounded-lg text-[12px] font-medium bg-success/12 text-success border border-success/15 hover:bg-success/18 transition-colors flex items-center gap-1.5">
-          <Check size={12} /> 确认
+          <Check size={12} /> {confirmLabel}
         </button>
         <button onClick={() => onConfirm(action.id, 'modify')} className="h-7 px-3 rounded-lg text-[12px] bg-surface-2 text-text-secondary border border-edge hover:bg-surface-3 transition-colors flex items-center gap-1.5">
-          <Pencil size={11} /> 修改
+          <Pencil size={11} /> 编辑草稿
         </button>
         <button onClick={() => onConfirm(action.id, 'cancel')} className="h-7 px-3 rounded-lg text-[12px] text-text-tertiary hover:text-danger hover:bg-danger/8 transition-colors">
-          取消
+          取消发送
         </button>
       </div>
     </div>
@@ -467,9 +557,12 @@ function ActionCard({ action, onConfirm }: { action: PendingAction; onConfirm: (
 
 function AgentAvatar() {
   return (
-    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent/20 to-accent/10 flex items-center justify-center shrink-0 border border-accent/15">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-accent">
-        <path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z" fill="currentColor"/>
+    <div className="w-7 h-7 rounded-lg overflow-hidden shrink-0 shadow-sm">
+      <svg viewBox="0 0 512 512" className="w-full h-full">
+        <defs><linearGradient id="aide-av" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0%" stopColor="#4A7FF7"/><stop offset="100%" stopColor="#3B5EE6"/></linearGradient></defs>
+        <rect width="512" height="512" rx="108" fill="url(#aide-av)"/>
+        <path d="M256 96 L384 416 L328 416 L298 332 L214 332 L184 416 L128 416 Z M256 192 L228 296 L284 296 Z" fill="white"/>
+        <path d="M372 100 L386 132 L418 146 L386 160 L372 192 L358 160 L326 146 L358 132 Z" fill="white" opacity="0.92"/>
       </svg>
     </div>
   )
@@ -484,6 +577,95 @@ function TypingIndicator() {
     </div>
   )
 }
+
+/* === Tool Calls Row (subtle, collapsible) === */
+
+const TOOL_NAME_MAP: Record<string, string> = {
+  powershell: 'PowerShell',
+  shell: 'Shell',
+  bash: 'Bash',
+  terminal: '终端',
+  memory_write: '写入记忆',
+  memory_search: '搜索记忆',
+  create_task: '创建任务',
+  update_task: '更新任务',
+  query_tasks: '查询任务',
+  query_projects: '查询项目',
+  query_relations: '查询联系人',
+  manage_project: '管理项目',
+  manage_relation: '管理联系人',
+  generate_report: '生成报告',
+  send_email_work_iq: '发送邮件',
+  reply_email_work_iq: '回复邮件',
+  forward_email_work_iq: '转发邮件',
+  send_message_work_iq: '发送消息',
+  reply_message_work_iq: '回复消息',
+  search_emails_work_iq: '搜索邮件',
+  search_messages_work_iq: '搜索消息',
+  get_calendar_work_iq: '查看日历',
+  create_issue_comment: '评论 Issue',
+  create_pull_request_review: '提交 Review',
+  list_notifications: '查看通知',
+  search_issues: '搜索 Issue',
+}
+
+function getToolLabel(name: string): string {
+  return TOOL_NAME_MAP[name] || name.replace(/_/g, ' ')
+}
+
+function ToolCallsRow({ calls }: { calls: ToolCallRecord[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const running = calls.filter(c => c.status === 'running')
+  const latest = running[running.length - 1] || calls[calls.length - 1]
+  const latestPreview = latest?.inputPreview
+  const label = running.length > 0
+    ? `${getToolLabel(latest.toolName)}${latestPreview ? ` · ${latestPreview}` : '…'}`
+    : `${calls.length} 次工具调用${latestPreview ? ` · ${latestPreview}` : ''}`
+
+  return (
+    <div className="my-0.5">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-1.5 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors py-0.5"
+      >
+        {running.length > 0 ? (
+          <Loader2 size={11} className="animate-spin" />
+        ) : (
+          <Wrench size={11} />
+        )}
+        <span className="truncate text-left">{label}</span>
+        <ChevronRight size={10} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
+      </button>
+
+      {expanded && (
+        <div className="mt-1 ml-0.5 border-l border-edge-subtle pl-2.5 space-y-1.5">
+          {calls.map(c => (
+            <div key={c.id} className="text-[11px] text-text-tertiary">
+              <div className="flex items-center gap-2">
+                {c.status === 'running' ? (
+                  <Loader2 size={10} className="animate-spin shrink-0" />
+                ) : c.status === 'error' ? (
+                  <X size={10} className="text-danger shrink-0" />
+                ) : (
+                  <Check size={10} className="text-success shrink-0" />
+                )}
+                <span className="truncate text-text-secondary">{getToolLabel(c.toolName)}</span>
+                {c.durationMs != null && <span className="shrink-0 tabular-nums">{c.durationMs < 1000 ? `${c.durationMs}ms` : `${(c.durationMs / 1000).toFixed(1)}s`}</span>}
+              </div>
+              {(c.inputPreview || c.resultPreview) && (
+                <div className="ml-[18px] mt-0.5 truncate font-mono text-[10.5px] text-text-tertiary/80" title={c.inputPreview || c.resultPreview}>
+                  {c.inputPreview || c.resultPreview}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* === Empty State === */
 
 function EmptyState({ taskTitle }: { taskTitle?: string }) {
   return (
@@ -507,10 +689,23 @@ function EmptyState({ taskTitle }: { taskTitle?: string }) {
 
 function PriorityBadge({ priority }: { priority: string }) {
   const styles = {
-    high: 'bg-danger/10 text-danger border-danger/15',
-    medium: 'bg-warning/10 text-warning border-warning/15',
-    low: 'bg-surface-2 text-text-tertiary border-edge'
+    p0: 'bg-danger/10 text-danger border-danger/15',
+    p1: 'bg-warning/10 text-warning border-warning/15',
+    p2: 'bg-surface-2 text-text-tertiary border-edge'
   }[priority] || 'bg-surface-2 text-text-tertiary border-edge'
 
-  return <span className={`px-1.5 py-[1px] rounded-md text-[11px] font-medium border ${styles}`}>{priority}</span>
+  return <span className={`px-1.5 py-[1px] rounded-md text-[11px] font-medium border ${styles}`}>{priority.toUpperCase()}</span>
+}
+
+function getDueLabel(dueDate: string): string {
+  const due = new Date(dueDate)
+  const now = new Date()
+  const diffMs = due.getTime() - now.getTime()
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) return `已逾期 ${Math.abs(diffDays)} 天`
+  if (diffDays === 0) return '今天截止'
+  if (diffDays === 1) return '明天截止'
+  if (diffDays <= 7) return `${diffDays} 天后截止`
+  return due.toLocaleDateString('zh-CN')
 }

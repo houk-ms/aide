@@ -13,13 +13,13 @@ export function TaskPanel() {
   const newTasks = tasks.filter(t =>
     (t.status === 'pending' || t.status === 'in_progress') && t.seenAt === null
   )
-  const inProgress = tasks.filter(t =>
+  const activeTasks = tasks.filter(t =>
     (t.status === 'pending' || t.status === 'in_progress') && t.seenAt !== null
   )
 
   const VISIBLE_CAP = 10
-  const visibleInProgress = expanded ? inProgress : inProgress.slice(0, VISIBLE_CAP)
-  const overflowCount = inProgress.length - VISIBLE_CAP
+  const visibleActive = expanded ? activeTasks : activeTasks.slice(0, VISIBLE_CAP)
+  const overflowCount = activeTasks.length - VISIBLE_CAP
 
   return (
     <aside className="w-[260px] min-w-[260px] shrink-0 border-r border-edge flex flex-col bg-surface-1">
@@ -30,9 +30,12 @@ export function TaskPanel() {
           className="flex items-center gap-2.5 no-drag group"
           title="回到主页"
         >
-          <div className="w-[22px] h-[22px] rounded-[6px] bg-gradient-to-br from-accent to-accent-hover flex items-center justify-center shadow-sm group-hover:shadow-md transition-shadow">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className="text-white">
-              <path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z" fill="currentColor"/>
+          <div className="w-[22px] h-[22px] rounded-[6px] overflow-hidden shadow-sm group-hover:shadow-md transition-shadow">
+            <svg viewBox="0 0 512 512" className="w-full h-full">
+              <defs><linearGradient id="aide-hdr" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0%" stopColor="#4A7FF7"/><stop offset="100%" stopColor="#3B5EE6"/></linearGradient></defs>
+              <rect width="512" height="512" rx="108" fill="url(#aide-hdr)"/>
+              <path d="M256 96 L384 416 L328 416 L298 332 L214 332 L184 416 L128 416 Z M256 192 L228 296 L284 296 Z" fill="white"/>
+              <path d="M372 100 L386 132 L418 146 L386 160 L372 192 L358 160 L326 146 L358 132 Z" fill="white" opacity="0.92"/>
             </svg>
           </div>
           <span className="text-[13px] font-semibold text-text-primary tracking-[-0.01em] group-hover:text-accent transition-colors">Aide</span>
@@ -75,15 +78,15 @@ export function TaskPanel() {
           )}
         </section>
 
-        {/* In progress section — always visible */}
+        {/* Active tasks section */}
         <section className="px-2">
           <div className="flex items-center gap-2 px-2.5 py-1.5">
-            <span className="text-[11px] font-medium text-text-tertiary uppercase tracking-[0.04em]">进行中</span>
-            <span className="text-[10px] text-text-tertiary">{inProgress.length}</span>
+            <span className="text-[11px] font-medium text-text-tertiary uppercase tracking-[0.04em]">处理中</span>
+            <span className="text-[10px] text-text-tertiary">{activeTasks.length}</span>
           </div>
-          {inProgress.length > 0 ? (
+          {activeTasks.length > 0 ? (
             <div className="space-y-0.5">
-              {visibleInProgress.map(task => (
+              {visibleActive.map(task => (
                 <SidebarTaskItem
                   key={task.id}
                   task={task}
@@ -104,7 +107,7 @@ export function TaskPanel() {
             </div>
           ) : (
             <div className="px-3 py-2">
-              <span className="text-[11px] text-text-tertiary/50">没有正在处理的任务</span>
+              <span className="text-[11px] text-text-tertiary/50">没有处理中的任务</span>
             </div>
           )}
         </section>
@@ -132,18 +135,26 @@ function SidebarTaskItem({ task, selected, onSelect, isNew }: {
   const { completeTask, snooze } = useTaskStore()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
 
-  const priorityColor = { high: 'bg-danger', medium: 'bg-warning', low: 'bg-text-tertiary' }[task.priority]
+  const priorityStyles = { p0: 'bg-[oklch(0.35_0.05_270)] text-white', p1: 'bg-[oklch(0.93_0.03_160)] text-[oklch(0.38_0.05_160)]', p2: 'bg-[oklch(0.95_0_0)] text-[oklch(0.55_0_0)]' }[task.priority] || 'bg-[oklch(0.95_0_0)] text-[oklch(0.55_0_0)]'
 
   return (
     <>
       <div
-        className={`group relative flex items-center gap-2.5 px-2.5 py-[7px] rounded-lg cursor-pointer transition-all ${
+        className={`group relative flex items-center gap-2 px-2.5 py-[7px] rounded-lg cursor-pointer transition-all ${
           selected ? 'bg-accent-subtle' : 'hover:bg-surface-2'
         }`}
         onClick={onSelect}
         onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY }) }}
       >
-        <div className={`w-[6px] h-[6px] rounded-full shrink-0 ${priorityColor}`} />
+        <span className={`shrink-0 px-[4px] py-[1px] rounded text-[9px] font-semibold leading-none ${priorityStyles}`}>
+          {task.priority.toUpperCase()}
+        </span>
+        {task.status === 'in_progress' && (
+          <div className="relative shrink-0 -ml-0.5">
+            <div className="w-[5px] h-[5px] rounded-full bg-accent" />
+            <div className="absolute inset-0 w-[5px] h-[5px] rounded-full bg-accent animate-ping opacity-30" />
+          </div>
+        )}
 
         <span className={`text-[13px] leading-[1.4] truncate flex-1 ${
           selected ? 'text-text-primary font-medium' : 'text-text-secondary'
@@ -201,7 +212,7 @@ function ContextMenu({ x, y, onClose, task }: { x: number; y: number; onClose: (
   const items = [
     { icon: <Check size={13} />, label: '完成', action: () => completeTask(task.id) },
     { icon: <X size={13} />, label: '取消', action: () => cancelTask(task.id) },
-    { icon: <ChevronDown size={13} />, label: '降低优先级', action: () => updateTask(task.id, { priority: 'low' }) },
+    { icon: <ChevronDown size={13} />, label: '降低优先级', action: () => updateTask(task.id, { priority: 'p2' }) },
     { icon: <Clock size={13} />, label: '延后到明天', action: () => { const t = new Date(); t.setDate(t.getDate() + 1); t.setHours(9, 0, 0, 0); snooze(task.id, t.toISOString()) } },
     { icon: <Clock size={13} />, label: '延后到下周一', action: () => { const t = new Date(); const daysUntilMon = ((8 - t.getDay()) % 7) || 7; t.setDate(t.getDate() + daysUntilMon); t.setHours(9, 0, 0, 0); snooze(task.id, t.toISOString()) } },
   ]

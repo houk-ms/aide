@@ -30,7 +30,7 @@ export interface SessionConfig {
   hooks?: SessionHooks
   infiniteSessions?: InfiniteSessionConfig
   systemMessage?: { content: string }
-  onPermissionRequest: (request: PermissionRequest) => Promise<boolean>
+  onPermissionRequest: (request: PermissionRequest, invocation: { sessionId: string }) => Promise<PermissionRequestResult> | PermissionRequestResult
   agents?: CustomAgentConfig[]
   skillDirectories?: string[]
 }
@@ -92,12 +92,15 @@ export interface PreToolUseInput {
 }
 
 export interface PermissionRequest {
-  kind: 'tool_call' | 'memory'
-  toolName?: string
-  action?: string
-  fact?: string
-  subject?: string
+  kind: 'shell' | 'write' | 'mcp' | 'read' | 'url' | 'custom-tool' | 'memory' | 'hook'
+  toolCallId?: string
 }
+
+export type PermissionRequestResult =
+  | { kind: 'approve-once' }
+  | { kind: 'approve-for-session' }
+  | { kind: 'reject' }
+  | { kind: 'no-result' }
 
 export interface SendResult {
   message: string

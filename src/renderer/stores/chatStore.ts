@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ChatMessage, PendingAction } from '@shared/types'
+import type { ChatMessage, PendingAction, ToolCallRecord } from '@shared/types'
 
 interface ChatStore {
   messages: ChatMessage[]
@@ -7,6 +7,7 @@ interface ChatStore {
   isStreaming: boolean
   loading: boolean
   modifyDraft: string | null // For the modify flow (#36)
+  toolCalls: ToolCallRecord[] // Active + recent tool calls for current turn
 
   fetchHistory: (taskId: string | null) => Promise<void>
   sendMessage: (message: string, taskId: string | null, attachments?: { name: string; type: string; dataUrl: string }[]) => Promise<void>
@@ -15,6 +16,7 @@ interface ChatStore {
   endStream: () => void
   addMessage: (msg: ChatMessage) => void
   addPendingAction: (action: PendingAction) => void
+  updateToolCall: (record: ToolCallRecord) => void
   confirmAction: (actionId: string, decision: 'confirm' | 'modify' | 'cancel', modification?: string) => Promise<void>
   setModifyDraft: (text: string | null) => void
 }
@@ -25,9 +27,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   isStreaming: false,
   loading: false,
   modifyDraft: null,
+  toolCalls: [],
 
   fetchHistory: async (taskId) => {
-    set({ loading: true })
+    set({ loading: true, isStreaming: false, streamingContent: '', toolCalls: [] })
     const messages = await window.aide.chat.getHistory(taskId)
     set({ messages, loading: false })
   },
@@ -44,7 +47,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set(state => ({
       messages: [...state.messages, userMsg],
       isStreaming: true,
-      streamingContent: ''
+      streamingContent: '',
+      toolCalls: []
     }))
 
     try {
@@ -81,6 +85,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   addMessage: (msg) => {
     set(state => ({ messages: [...state.messages, msg] }))
+  },
+
+  updateToolCall: (record) => {
+    set(state => {
+      const existing = state.toolCalls.findIndex(t => t.id === record.id)
+      if (existing >= 0) {
+        const updated = [...state.toolCalls]
+        updated[existing] = { ...updated[existing], ...record }
+        return { toolCalls: updated }
+      }
+      return { toolCalls: [...state.toolCalls, record] }
+    })
   },
 
   addPendingAction: (action) => {

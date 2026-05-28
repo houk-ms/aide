@@ -3,6 +3,7 @@ import { createTask, updateTask, listTasks, getTask } from '../tasks'
 import { getProject } from '../projects'
 import { listRelations, getRelation } from '../relations'
 import { getAutonomyLevel, getPreferences } from '../preferences'
+import { getConnectionStatus } from '../connections'
 import { showSystemNotification } from '../index'
 import type { ChatMessage, Task, PendingAction } from '@shared/types'
 import { v4 as uuid } from 'uuid'
@@ -94,6 +95,22 @@ const hooks: SessionConfig['hooks'] = {
           if (rels.length) parts.push(formatRelationsContext(rels as any[]))
         }
       }
+    } else if (invocation.sessionId === 'general') {
+      // General chat: inject workspace awareness (task summary + connection status)
+      const conns = getConnectionStatus()
+      const connSummary = conns.map(c =>
+        `- ${c.type}: ${c.authenticated ? `✓ 已连接${c.activeAccount ? ` (${c.activeAccount})` : ''}` : '✗ 未连接'}${c.lastError ? ` [错误: ${c.lastError}]` : ''}`
+      ).join('\n')
+      parts.push(`## 当前连接状态\n${connSummary}`)
+
+      // Brief task overview
+      const allTasks = listTasks({})
+      const pendingCount = allTasks.filter(t => t.status === 'pending' || t.status === 'in_progress').length
+      const p0Count = allTasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && t.priority === 'p0').length
+      const unseenCount = allTasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && !t.seenAt).length
+      if (pendingCount > 0) {
+        parts.push(`## 任务概况\n活跃任务: ${pendingCount} 个${p0Count > 0 ? `（其中 ${p0Count} 个紧急）` : ''}${unseenCount > 0 ? `，${unseenCount} 个未读` : ''}`)
+      }
     }
 
     // Token budget: ~4K total. 固定 prompt ~1K, L0 ~2K, 动态 ~1K
@@ -102,7 +119,21 @@ const hooks: SessionConfig['hooks'] = {
   },
 
   // 注入 L1 Knowledge — 基于用户消息做 FTS5 检索
-  onUserPromptSubmitted: async (input: any) => {
+  // Also tracks interaction count for periodic memory flush (since infinite sessions never trigger onSessionEnd)
+  onUserPromptSubmitted: async (input: any, invocation: { sessionId: string }) => {
+    // Track interaction count and periodically flush a session context marker to L2
+    const count = (sessionInteractionCount.get(invocation.sessionId) || 0) + 1
+    sessionInteractionCount.set(invocation.sessionId, count)
+    if (count % MEMORY_FLUSH_INTERVAL === 0) {
+      const taskId = extractTaskIdFromSession(invocation.sessionId)
+      writeMemory({
+        content: `[Session Checkpoint] session=${invocation.sessionId}, ${count} interactions. Recent topic: ${input.prompt.slice(0, 200)}`,
+        layer: 'L2',
+        source: 'system',
+        taskId: taskId || undefined
+      })
+    }
+
     const memories = searchMemory(input.prompt, 5)
     if (memories.length === 0) return {}
     const block = memories.map(m => `- ${m.content}`).join('\n')
@@ -127,81 +158,162 @@ const hooks: SessionConfig['hooks'] = {
     return {}
   },
 
-  // 工具调用前 — 确认是否真的触发了
+  // 工具调用前 — 授权拦截 + 向 UI 推送记录
   onPreToolUse: async (input: any, invocation: { sessionId: string }) => {
-    console.log(`[Agent] tool_pre: ${input.toolName} | session: ${invocation.sessionId} | args: ${JSON.stringify(input.toolArgs || input.arguments || {}).slice(0, 200)}`)
+    const toolName: string = input.toolName || ''
+    const toolCallId: string = input.toolCallId || `tc-${Date.now()}`
+    const inputPreview = summarizeToolInput(toolName, input.toolArgs)
+    console.log(`[Agent] tool_pre: ${toolName} | session: ${invocation.sessionId} | args: ${JSON.stringify(input.toolArgs || {}).slice(0, 200)}`)
+
+    // Auto-promote task to in_progress on first tool call
+    const taskId = extractTaskIdFromSession(invocation.sessionId)
+    if (taskId && !activatedTaskSessions.has(invocation.sessionId)) {
+      activatedTaskSessions.add(invocation.sessionId)
+      const task = getTask(taskId)
+      if (task && task.status === 'pending') {
+        updateTask(taskId, { status: 'in_progress' })
+        emitEvent({ type: 'task:updated', task: { ...task, status: 'in_progress' } })
+      }
+    }
+
+    // 向 UI 推送"正在调用"记录
+    toolCallTimestamps.set(toolCallId, Date.now())
+    emitEvent({
+      type: 'chat:tool-use',
+      taskId,
+      record: { id: toolCallId, toolName, status: 'running', timestamp: new Date().toISOString(), inputPreview }
+    })
+
+    // 受保护工具 → 弹确认卡片等用户批准
+    if (CONFIRM_REQUIRED_TOOLS.has(toolName)) {
+      const approved = await requestToolConfirmation(toolName, input.toolArgs)
+      if (!approved) {
+        emitEvent({
+          type: 'chat:tool-use',
+          taskId,
+          record: { id: toolCallId, toolName, status: 'error', timestamp: new Date().toISOString(), inputPreview, resultPreview: '用户取消' }
+        })
+        toolCallTimestamps.delete(toolCallId)
+        return { permissionDecision: 'deny' as const, permissionDecisionReason: '用户取消了操作' }
+      }
+    }
+    // 其余工具 → 放行
+    return undefined
   },
 
-  // 工具调用后 — 观察结果
+  // 工具调用后 — 向 UI 推送完成记录
   onPostToolUse: async (input: any, invocation: { sessionId: string }) => {
-    console.log(`[Agent] tool_post: ${input.toolName} | session: ${invocation.sessionId} | result_size: ${JSON.stringify(input.toolResult || '').length}`)
+    const toolName: string = input.toolName || ''
+    const toolCallId: string = input.toolCallId || ''
+    const taskId = extractTaskIdFromSession(invocation.sessionId)
+    const inputPreview = summarizeToolInput(toolName, input.toolArgs)
+    const startTime = toolCallTimestamps.get(toolCallId)
+    const durationMs = startTime ? Date.now() - startTime : undefined
+    toolCallTimestamps.delete(toolCallId)
+
+    const resultStr = JSON.stringify(input.toolResult || '')
+    const resultPreview = resultStr.length > 120 ? resultStr.slice(0, 120) + '…' : resultStr
+    console.log(`[Agent] tool_post: ${toolName} | session: ${invocation.sessionId} | ${durationMs}ms | result_size: ${resultStr.length}`)
+
+    emitEvent({
+      type: 'chat:tool-use',
+      taskId,
+      record: { id: toolCallId, toolName, status: 'done', timestamp: new Date().toISOString(), durationMs, inputPreview, resultPreview }
+    })
   }
 }
 
-// === Permission Handler (自主级别) ===
+// Tool call timing tracker
+const toolCallTimestamps = new Map<string, number>()
+// Track sessions where task has been auto-promoted to in_progress
+const activatedTaskSessions = new Set<string>()
+// Track interaction count per session for periodic memory flush
+const sessionInteractionCount = new Map<string, number>()
+const MEMORY_FLUSH_INTERVAL = 10 // Flush every N user messages
 
-// 读操作=自动, 记忆=通知, 写操作=确认
-const AUTO_TOOLS = new Set([
-  'memory_search', 'query_tasks', 'generate_report',
-  'ask_work_iq', 'fetch_work_iq', 'fetch_blob_work_iq', 'get_schema_work_iq', 'search_paths_work_iq'
-])
-const NOTIFY_TOOLS = new Set(['memory_write', 'create_task'])
-// All others → confirm
+// === Permission Handler (分类级别授权) ===
 
-const pendingActions = new Map<string, { resolve: (v: PermissionRequestResult) => void; action: PendingAction }>()
+// onPermissionRequest 处理 SDK 分类级别的权限（shell, mcp, write, read 等）
+// 工具级别的精确控制在 onPreToolUse 中（见上方 hooks）
+
+const pendingActions = new Map<string, { resolve: (v: boolean) => void; action: PendingAction; timer: ReturnType<typeof setTimeout> }>()
 
 async function handlePermissionRequest(request: PermissionRequest, _invocation: { sessionId: string }): Promise<PermissionRequestResult> {
   const level = getAutonomyLevel()
 
-  // Full auto mode — approve everything
-  if (level === 'auto') {
-    return { kind: 'approve-once' }
-  }
-
-  // Full confirm mode — everything asks
+  // confirm 模式 — 所有分类都弹确认
   if (level === 'confirm') {
-    return requestUserConfirmation(request)
+    const approved = await requestCategoryConfirmation(request)
+    return approved ? { kind: 'approve-once' } : { kind: 'reject' }
   }
 
-  // Default mode — read/memory/custom-tool auto, write confirm
-  if (request.kind === 'memory' || request.kind === 'read' || request.kind === 'custom-tool') {
-    return { kind: 'approve-once' }
-  }
-
-  // Shell/command — auto-approve if intention is clearly read-only
-  const details = request as any
-  if (details.readOnly === true || details.commands?.every?.((c: any) => c.readOnly === true)) {
-    return { kind: 'approve-once' }
-  }
-  // Check intention text for read-like operations
-  const intention = (details.intention || details.description || '').toLowerCase()
-  if (/\b(fetch|read|get|list|check|query|search|look up|查看|获取|检查|搜索)\b/.test(intention)) {
-    return { kind: 'approve-once' }
-  }
-
-  return requestUserConfirmation(request)
+  // default / auto — 分类级别全部自动批准（具体工具由 onPreToolUse 拦截）
+  return { kind: 'approve-once' }
 }
 
-function requestUserConfirmation(request: PermissionRequest): Promise<PermissionRequestResult> {
+function requestCategoryConfirmation(request: PermissionRequest): Promise<boolean> {
   return new Promise((resolve) => {
     const actionId = uuid()
     const action: PendingAction = {
       id: actionId,
       type: request.kind,
-      description: `执行 ${request.kind}`,
+      description: `允许 ${request.kind} 类操作`,
       details: request as unknown as Record<string, unknown>,
       status: 'pending'
     }
-    pendingActions.set(actionId, { resolve, action })
-    emitEvent({ type: 'chat:pending-action', action })
 
-    // Auto-reject after 5 minutes if user doesn't respond
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (pendingActions.has(actionId)) {
         pendingActions.delete(actionId)
-        resolve({ kind: 'reject' })
+        action.status = 'cancelled'
+        emitEvent({ type: 'chat:action-expired', actionId })
+        resolve(false)
       }
     }, 5 * 60 * 1000)
+
+    pendingActions.set(actionId, { resolve, action, timer })
+    emitEvent({ type: 'chat:pending-action', action })
+  })
+}
+
+// === 工具级别授权 (由 onPreToolUse 调用) ===
+
+// 需要强制确认的工具（外部写操作）
+// 注：WorkIQ 发送类工具已在 MCP 层过滤，不再注册给 LLM
+const CONFIRM_REQUIRED_TOOLS = new Set([
+  // GitHub — 评论/review
+  'create_issue_comment',
+  'create_pull_request_review',
+])
+
+const TOOL_LABELS: Record<string, string> = {
+  create_issue_comment: '评论 GitHub Issue',
+  create_pull_request_review: '提交 PR Review',
+}
+
+function requestToolConfirmation(toolName: string, toolArgs: unknown): Promise<boolean> {
+  return new Promise((resolve) => {
+    const actionId = uuid()
+    const action: PendingAction = {
+      id: actionId,
+      type: 'tool_call',
+      toolName,
+      description: TOOL_LABELS[toolName] || `执行 ${toolName}`,
+      details: toolArgs as Record<string, unknown> || {},
+      status: 'pending'
+    }
+
+    const timer = setTimeout(() => {
+      if (pendingActions.has(actionId)) {
+        pendingActions.delete(actionId)
+        action.status = 'cancelled'
+        emitEvent({ type: 'chat:action-expired', actionId })
+        resolve(false)
+      }
+    }, 5 * 60 * 1000)
+
+    pendingActions.set(actionId, { resolve, action, timer })
+    emitEvent({ type: 'chat:pending-action', action })
   })
 }
 
@@ -219,35 +331,51 @@ function buildSystemMessage(): string {
     : '- 使用中文回复（除非用户用其他语言）'
   const locale = prefs.language === 'en' ? 'en-US' : 'zh-CN'
 
+  // Gather connected identities
+  const conns = getConnectionStatus()
+  const ghConn = conns.find(c => c.type === 'github')
+  const identityLines: string[] = []
+  if (ghConn?.activeAccount) identityLines.push(`- GitHub: ${ghConn.activeAccount}`)
+
   return `你是 Aide，用户的个人工作 Agent。你帮助用户管理工作事务、跟踪任务、处理信息流。
 
-当前时间: ${now.toLocaleDateString(locale)} ${now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })}
+当前时间: ${now.toLocaleDateString(locale)} ${now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })}${identityLines.length ? `\n当前操作身份:\n${identityLines.join('\n')}` : ''}
 
 ## 行为准则
-- 主动识别用户需要处理的事项，创建 Task 跟踪
-- 回答简洁直接，不啰嗦
-- 读操作直接做，不问
-- 写操作先告知用户方案，等确认后执行
-- 获知新信息时主动调用 memory_write 记录
-${langInstruction}
+- 回答简洁直接
+- 读操作直接做；写操作（发邮件/评论PR）直接调工具，系统会自动弹确认卡片
+- 发现值得记住的新事实时调 memory_write
 
-## 工具使用原则
-- 需要回忆历史信息时，先调 memory_search
-- 发现用户有新的待办事项时，调 create_task
-- 任务完成时，调 update_task 更新状态
-- 发邮件/消息等写操作，先描述方案等用户确认
-- 查看邮件、Teams 消息、日历时，使用 workiq 系列工具（ask_work_iq, fetch_work_iq 等）
-- 查看 GitHub Issue/PR/通知时，使用 GitHub 系列工具
+## 任务管理原则
 
-## 记忆管理原则
-- 该记：用户纠正、明确偏好、稳定事实、工具环境、人际关系
-- 不该记：任务进度、session 内临时状态、会快速过期的信息
-- 格式：陈述性事实（"用户偏好简洁回复" ✓，"总是简洁回复" ✗）
-- **错误修正**：当用户纠正你时，不仅要写入正确事实，还要检查是否有已存在的错误记忆导致了这次错误。如果有，用 memory_write(action: update/remove) 修正它。不能只加新的不管旧的。
+**门槛（高）**：只有明确需要我本人出手的事才建 Task。
+- 该建：点名要我做某事、单独发给我要求行动、我是明确责任人
+- 不该建：纯通知、我只是 CC/群发对象、已完成的事、自动订阅
 
-## 对话中的上下文感知
-- 如果 General 对话中用户提到的事情与某个已有 Task 明显相关，主动提示："这个和任务「XX」相关，要切换到那个任务继续吗？"
-- 用户第一次进入某个 Task 的对话时，主动简要说明该任务是什么、来自哪里、当前状态、建议如何处理。`
+**优先级**：
+- P0：重要的人点名我 + 单独发给我 + 事情紧急。三者结合。
+- P1：需要我处理，有重要性或时限，但不紧急。
+- P2：被牵涉但不是唯一责任人，或低优先级。
+- 不确定就选 P2。
+
+**去重**：创建前确认没有已存在的相同任务（系统会注入已有任务列表）。传 sourceId 做精确去重。
+
+## 联系人与项目
+
+克制。质量优先于数量。
+- 联系人：只记与我有直接实质性往来的人。群里没跟我交流过的不记。判断标准：这个人下周还会出现吗？
+- 项目：必须对应真实 repo（有 GitHub URL 或本地路径）。抽象概念不建。
+- 不要首次看到就记录，确认重要/重复出现后再建。
+
+## 记忆管理
+- 该记：用户纠正、偏好、稳定事实、人际关系
+- 不该记：临时状态、会快速过期的信息
+- 用户纠正时，检查并修正已有的错误记忆，不能只加新的不管旧的
+
+## 上下文感知
+- General 对话中提到与已有 Task 相关的事 → 提示是否切换
+- 进入 Task 对话时 → 简要说明任务背景、状态、建议处理方式
+${langInstruction}`
 }
 
 // === Model Selection (persisted to DB) ===
@@ -370,47 +498,94 @@ export async function sendMessage(
 
 // === Job 执行 (无头 agent session) ===
 
-// Job safety: only auto-approve reads, memory writes, and task operations. Reject external writes.
-function jobPermissionHandler(request: PermissionRequest): PermissionRequestResult {
-  const safeKinds = new Set(['read', 'memory', 'custom-tool'])
-  if (safeKinds.has(request.kind)) {
-    return { kind: 'approve-once' }
-  }
-  // Reject external write operations (email send, PR actions, etc.) in headless mode
-  return { kind: 'reject' }
+// Job: category-level auto-approve. Tool-level blocking via onPreToolUse in job hooks.
+function jobPermissionHandler(_request: PermissionRequest): PermissionRequestResult {
+  return { kind: 'approve-once' }
 }
 
-export async function executeJobSession(instruction: string, jobId: string): Promise<string> {
+// Job hooks: override onPreToolUse to hard-deny protected tools (no user to confirm)
+const jobHooks = {
+  ...hooks,
+  onPreToolUse: async (input: any, invocation: { sessionId: string }) => {
+    const toolName: string = input.toolName || ''
+    console.log(`[Agent/Job] tool_pre: ${toolName} | session: ${invocation.sessionId}`)
+    if (CONFIRM_REQUIRED_TOOLS.has(toolName)) {
+      return { permissionDecision: 'deny' as const, permissionDecisionReason: 'Job 模式不允许发送类操作' }
+    }
+    return undefined
+  },
+  onSessionStart: async () => {
+    const parts: string[] = []
+
+    // Identity
+    const l0 = getL0Content()
+    if (l0) parts.push(`## 身份记忆\n${l0}`)
+
+    // Existing tasks (prevents duplicates — Agent sees what already exists)
+    const existingTasks = listTasks({ status: ['pending', 'in_progress'] })
+    if (existingTasks.length > 0) {
+      const taskLines = existingTasks.slice(0, 30).map(t =>
+        `- [${t.priority}] ${t.title}${t.source.externalId ? ` (src:${t.source.externalId})` : ''}`
+      ).join('\n')
+      parts.push(`## 已有任务\n${taskLines}`)
+    }
+
+    parts.push(`[JOB MODE] 自动执行。可创建任务和记忆。不允许发邮件/评论等外部写操作。`)
+
+    return { additionalContext: parts.join('\n\n') }
+  }
+}
+
+import { setJobSession } from './state'
+
+export async function executeJobSession(instruction: string, jobId: string, lastRunAt?: string | null): Promise<string> {
   if (!client) throw new Error('Copilot SDK not initialized')
 
-  const sessionId = `job-${jobId}-${Date.now()}`
-  const session = await client.createSession({
-    sessionId,
-    model: getSelectedModel(),
-    tools: buildTools(),
-    hooks: {
-      ...hooks,
-      onSessionStart: async () => ({
-        additionalContext: `${getL0Content() ? `## 身份记忆\n${getL0Content()}\n\n` : ''}[JOB MODE] 自动执行定时任务。可以创建任务和记录记忆。不允许执行外部写操作（发邮件、评论 PR 等），这些需要用户在 Chat 中确认。`
-      })
-    },
-    infiniteSessions: { enabled: false },
-    systemMessage: { mode: 'append', content: buildSystemMessage() },
-    onPermissionRequest: jobPermissionHandler
-  })
+  // Timeouts per job type (MCP calls like ask_work_iq take 60-90s each)
+  const JOB_TIMEOUTS: Record<string, number> = {
+    'periodic-poll': 300_000,      // 5 min — checks new items, creates tasks
+    'morning-briefing': 480_000,   // 8 min — scans all sources, creates many tasks
+    'eod-review': 300_000,         // 5 min — reviews today's tasks
+    'world-sync': 600_000,         // 10 min — full relation/project sync
+  }
+  const timeoutMs = JOB_TIMEOUTS[jobId] || 300_000
 
-  const result = await session.sendAndWait({ prompt: instruction }, 180_000)
-  await session.disconnect()
-  return result?.data.content || ''
+  const sessionId = `job-${jobId}-${Date.now()}`
+  setJobSession(true)
+  try {
+    const session = await client.createSession({
+      sessionId,
+      model: getSelectedModel(),
+      tools: buildTools(),
+      hooks: jobHooks,
+      infiniteSessions: { enabled: false },
+      systemMessage: { mode: 'append', content: buildSystemMessage() },
+      onPermissionRequest: jobPermissionHandler
+    })
+
+    // Inject time context into the prompt so Agent knows the time window
+    let prompt = instruction
+    if (lastRunAt) {
+      prompt = `[上次执行时间: ${lastRunAt}] 只查看此时间之后的新内容。\n\n${instruction}`
+    } else {
+      prompt = `[首次执行] 只查看过去 2 小时内的内容。\n\n${instruction}`
+    }
+    const result = await session.sendAndWait({ prompt }, timeoutMs)
+    await session.disconnect()
+    return result?.data.content || ''
+  } finally {
+    setJobSession(false)
+  }
 }
 
 // === Morning Briefing (主动消息) ===
 
 export async function generateMorningBriefing(): Promise<string> {
-  return executeJobSession(
-    '生成今日工作 briefing。检查新邮件、Teams 消息、GitHub 通知和今天的日历。列出需要用户处理的事项，并按优先级排序给出建议。',
-    'morning-briefing'
-  )
+  // Fetch instruction from DB so there's a single source of truth
+  const db = getDb()
+  const row = db.prepare("SELECT instruction FROM jobs WHERE id = 'morning-briefing'").get() as { instruction: string } | undefined
+  const instruction = row?.instruction || '检查今天的日历事件、新邮件、Teams 消息和 GitHub 通知。为需要我处理的事项创建 Task，按优先级排序给出今日建议。'
+  return executeJobSession(instruction, 'morning-briefing')
 }
 
 // === Chat History (本地 DB, UI 展示用) ===
@@ -443,19 +618,21 @@ export function confirmAction(actionId: string, decision: 'confirm' | 'modify' |
   const pending = pendingActions.get(actionId)
   if (!pending) return
 
+  clearTimeout(pending.timer)
+
   if (decision === 'modify' && modification) {
     pending.action.status = 'cancelled'
-    pending.resolve({ kind: 'reject' })
+    pending.resolve(false)
     pendingActions.delete(actionId)
     return
   }
 
   pending.action.status = decision === 'confirm' ? 'confirmed' : 'cancelled'
-  pending.resolve(decision === 'confirm' ? { kind: 'approve-once' } : { kind: 'reject' })
+  pending.resolve(decision === 'confirm')
   pendingActions.delete(actionId)
 }
 
-// === First Message: Agent proactively explains task when user enters ===
+// === First Message: Instant task briefing from local data (no LLM call) ===
 
 export async function triggerFirstMessage(taskId: string): Promise<ChatMessage | null> {
   const task = getTask(taskId)
@@ -465,49 +642,53 @@ export async function triggerFirstMessage(taskId: string): Promise<ChatMessage |
   const history = getChatHistory(taskId)
   if (history.length > 0) return null
 
-  // Synthesize a first-message prompt
-  const prompt = `用户刚进入了任务「${task.title}」的对话。这是用户第一次查看这个任务。
-请主动说明：这个任务是什么、来自哪里（${task.source.type}${task.source.externalUrl ? ', ' + task.source.externalUrl : ''}）、当前状态（${task.status}）、优先级（${task.priority}）${task.dueDate ? '、截止时间 ' + task.dueDate : ''}，以及你建议如何处理。
-简洁明了，2-4 句话。`
+  // Build a local briefing from structured data — instant, no LLM needed
+  const sourceLabel = { email: '邮件', github: 'GitHub', teams: 'Teams', calendar: '日历', user: '手动创建', agent: 'Agent' }[task.source.type] || task.source.type
+  const priorityLabel = { p0: 'P0（紧急）', p1: 'P1（正常）', p2: 'P2（可延后）' }[task.priority] || task.priority
+  const statusLabel = { pending: '待处理', in_progress: '处理中', completed: '已完成', cancelled: '已取消' }[task.status] || task.status
 
-  const session = await getOrCreateSession(taskId)
-  let fullResponse = ''
-
-  const unsubscribe = session.on('assistant.message_delta', (event) => {
-    const delta = event.data.deltaContent || ''
-    emitEvent({ type: 'chat:stream', taskId, delta })
-    fullResponse += delta
-  })
-
-  try {
-    const result = await session.sendAndWait({ prompt }, 180_000)
-    if (result) {
-      fullResponse = result.data.content || fullResponse
-    }
-  } finally {
-    unsubscribe()
+  const lines: string[] = []
+  lines.push(`**${task.title}**`)
+  lines.push('')
+  lines.push(`来源：${sourceLabel}${task.source.externalUrl ? ` · [链接](${task.source.externalUrl})` : ''}`)
+  lines.push(`优先级：${priorityLabel} · 状态：${statusLabel}`)
+  if (task.dueDate) {
+    const due = new Date(task.dueDate)
+    const now = new Date()
+    const diffDays = Math.ceil((due.getTime() - now.getTime()) / 86400000)
+    const dueStr = due.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+    if (diffDays < 0) lines.push(`截止：${dueStr}（已逾期 ${-diffDays} 天）`)
+    else if (diffDays === 0) lines.push(`截止：今天`)
+    else lines.push(`截止：${dueStr}（${diffDays} 天后）`)
   }
-
-  emitEvent({ type: 'chat:stream-end', taskId })
+  if (task.description) {
+    lines.push('')
+    lines.push(task.description)
+  }
+  lines.push('')
+  lines.push('---')
+  lines.push('需要我帮你处理这个任务吗？可以直接告诉我要做什么。')
 
   const agentMsg: ChatMessage = {
     id: uuid(),
     role: 'agent',
-    content: fullResponse,
+    content: lines.join('\n'),
     timestamp: new Date().toISOString(),
     taskId
   }
   saveMessage(agentMsg)
+  emitEvent({ type: 'chat:message', message: agentMsg })
   return agentMsg
 }
 
 // === Helpers ===
 
 function formatTaskContext(task: Task): string {
-  const lines = [`## 当前任务`, `- 标题: ${task.title}`, `- 状态: ${task.status}`, `- 优先级: ${task.priority}`]
+  const lines = [`## 当前任务`, `- ID: ${task.id}`, `- 标题: ${task.title}`, `- 状态: ${task.status}`, `- 优先级: ${task.priority}`]
   if (task.description) lines.push(`- 描述: ${task.description}`)
   if (task.dueDate) lines.push(`- 截止: ${task.dueDate}`)
   if (task.source.externalUrl) lines.push(`- 来源: ${task.source.externalUrl}`)
+  lines.push(`\n> 用户在此任务的对话中。可直接用 update_task(id: "${task.id}", ...) 操作此任务。`)
   return lines.join('\n')
 }
 
@@ -525,6 +706,44 @@ function emitEvent(event: { type: string; [key: string]: unknown }): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('aide:event', event)
   }
+}
+
+function summarizeToolInput(toolName: string, toolArgs: unknown): string | undefined {
+  if (!toolArgs || typeof toolArgs !== 'object') return undefined
+
+  const args = toolArgs as Record<string, unknown>
+  const preferredKeys = toolName.toLowerCase().includes('powershell') || toolName.toLowerCase().includes('shell')
+    ? ['command', 'cmd', 'script', 'code', 'input']
+    : ['command', 'cmd', 'script', 'query', 'prompt', 'title', 'path', 'filePath', 'url', 'repo', 'name', 'action']
+
+  for (const key of preferredKeys) {
+    const value = args[key]
+    const preview = previewValue(value)
+    if (preview) return preview
+  }
+
+  const entries = Object.entries(args)
+    .map(([key, value]) => {
+      const preview = previewValue(value)
+      return preview ? `${key}: ${preview}` : null
+    })
+    .filter(Boolean) as string[]
+
+  if (entries.length === 0) return undefined
+  return truncatePreview(entries.slice(0, 2).join(' · '))
+}
+
+function previewValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return truncatePreview(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value) && value.length > 0) return truncatePreview(value.map(v => previewValue(v) || '').filter(Boolean).join(', '))
+  return undefined
+}
+
+function truncatePreview(value: string, max = 160): string | undefined {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  if (!compact) return undefined
+  return compact.length > max ? compact.slice(0, max - 1) + '…' : compact
 }
 
 // === Relation cleanup helper ===
