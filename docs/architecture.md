@@ -29,8 +29,11 @@
 │  ┌──────────────────────────────────────┐   │
 │  │ MCP Servers                          │   │
 │  │ • @microsoft/workiq (M365 全覆盖)   │   │
-│  │ • GitHub MCP Server                  │   │
-│  └──────────────────────────────────────┘   │
+│  │ • GitHub MCP Server                  │   │  │ • 用户安装的 MCP（来自 Registry）   │   │
+  └──────────────────────────────────────┘   │
+  ┌──────────────────────────────────────┐   │
+  │ Skills (SDK skillDirectories)        │   │
+  │ • 内置 / 社区 / 本地 SKILL.md        │   ││  └──────────────────────────────────────┘   │
 └──────────────────────┬──────────────────────┘
                        │ IPC
 ┌──────────────────────▼──────────────────────┐
@@ -87,8 +90,18 @@ Job Scheduler (cron)
 ~/.aide/
 ├── aide.db              # SQLite 主数据库
 ├── sessions/            # Copilot SDK session 数据（SDK 自管理）
+├── skills/              # 已安装的 Skill（SKILL.md 包，SDK 从此目录加载）
 └── logs/                # 运行日志
 ```
+
+### 可扩展性（Skill + MCP）
+
+Aide 的能力可被持续扩展，而非写死在代码里。两类平级扩展点：
+
+- **Skill**：`SKILL.md` 包，放入 `~/.aide/skills/`，通过 SDK 的 `SessionConfig.skillDirectories` 自动加载，按 description 匹配后注入 context。
+- **MCP Server**：外部工具提供者，可从 `registry.modelcontextprotocol.io` 搜索并一键安装，配置注入 session。
+
+详见 docs/skill.md。
 
 ## 模块通信
 

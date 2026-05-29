@@ -61,7 +61,7 @@ export async function runJob(jobId: string): Promise<void> {
   if (jobId === 'periodic-poll') {
     const lastRun = job.lastRunAt ? new Date(job.lastRunAt).getTime() : 0
     const minutesSince = (Date.now() - lastRun) / (1000 * 60)
-    if (minutesSince < 50 && job.lastResult === 'success') {
+    if (minutesSince < 25 && job.lastResult === 'success') {
       return
     }
   }

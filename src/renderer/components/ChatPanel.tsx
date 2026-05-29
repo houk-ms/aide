@@ -38,8 +38,8 @@ export function ChatPanel() {
   useEffect(() => { inputRef.current?.focus() }, [selectedTaskId])
 
   useEffect(() => {
-    window.aide.models.list().then(setModels)
-    window.aide.models.getSelected().then(setSelectedModel)
+    window.aide.models.list().then(ms => { console.log('[Models]', JSON.stringify(ms.map(m => m.id))); setModels(ms) })
+    window.aide.models.getSelected().then(s => { console.log('[SelectedModel]', s); setSelectedModel(s) })
   }, [])
 
   useEffect(() => {
@@ -239,8 +239,10 @@ export function ChatPanel() {
                       <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />
                       <div className="absolute bottom-full left-0 mb-1.5 bg-surface-0 border border-edge rounded-xl shadow-lg py-1.5 min-w-[320px] w-max z-50">
                         {(() => {
-                          const featured = ['claude-opus-4.6', 'claude-opus-4.7', 'gpt-5.5', 'gpt-5.4']
-                          const featuredModels = models.filter(m => featured.includes(m.id))
+                          const featured = ['claude-opus-4.8', 'claude-opus-4.7', 'claude-opus-4.6', 'gpt-5.5', 'gpt-5.4']
+                          const featuredModels = featured
+                            .map(id => models.find(m => m.id === id))
+                            .filter((m): m is ModelInfo => !!m)
                           const otherModels = models.filter(m => !featured.includes(m.id))
                           return (
                             <>

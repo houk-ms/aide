@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Settings, Check, Clock, X, ChevronDown, ChevronUp, Zap } from 'lucide-react'
+import { SlidersHorizontal, Check, Clock, X, ChevronDown, ChevronUp, Zap } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import type { Task } from '@shared/types'
@@ -42,10 +42,11 @@ export function TaskPanel() {
         </button>
         <button
           onClick={() => openSettings()}
-          className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors no-drag"
-          title="设置"
+          className="h-7 px-2 rounded-md flex items-center gap-1.5 text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors no-drag"
+          title="管理"
         >
-          <Settings size={15} strokeWidth={1.75} />
+          <SlidersHorizontal size={13} strokeWidth={1.75} />
+          <span className="text-[11px]">管理</span>
         </button>
       </header>
 

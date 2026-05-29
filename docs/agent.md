@@ -67,6 +67,16 @@ Agent 通过 SDK 的 Custom Tools 机制获得操作能力：
 - Tool 列表是固定注入还是按 Task 类型动态选择？（token 成本考虑）
 - 写操作的确认机制：哪些 Tool 调用需要用户确认？通过 SDK 的 `onPermissionRequest` 实现
 
+### 3.5 Skill 加载（可扩展能力）
+
+除了内置 Custom Tools，Agent 还通过 SDK 原生的 Skill 机制获得可扩展能力：
+
+- 创建 session 时设置 `skillDirectories`（指向 `~/.aide/skills/` 等），SDK 自动扫描 `SKILL.md`
+- 启动时只加载 Skill 的 `name + description`，按需在匹配时注入正文（`skill.invoked` 事件）
+- Skill 可声明 `allowed_tools`、自带本地 tool、依赖 MCP server
+
+这让「加一个新能力」从「改代码」变成「装一个 Skill / 配一个 MCP」。详见 docs/skill.md。
+
 ### 4. 自主级别控制
 
 通过 SDK 的 permission 系统实现分级自主：

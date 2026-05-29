@@ -383,12 +383,12 @@ ${langInstruction}`
 let selectedModel: string | null = null
 
 export async function listModels(): Promise<{ id: string; name: string }[]> {
-  if (!client) return [{ id: 'gpt-4.1', name: 'GPT-4.1' }]
+  if (!client) return [{ id: 'claude-opus-4.8', name: 'Claude Opus 4.8' }]
   try {
     const models = await client.listModels()
     return models.map(m => ({ id: m.id, name: m.name }))
   } catch {
-    return [{ id: 'gpt-4.1', name: 'GPT-4.1' }]
+    return [{ id: 'claude-opus-4.8', name: 'Claude Opus 4.8' }]
   }
 }
 
@@ -396,7 +396,7 @@ export function getSelectedModel(): string {
   if (!selectedModel) {
     const db = getDb()
     const row = db.prepare("SELECT content FROM memory_entries WHERE id = '__selected_model'").get() as { content: string } | undefined
-    selectedModel = row?.content || 'gpt-4.1'
+    selectedModel = row?.content || 'claude-opus-4.8'
   }
   return selectedModel
 }
@@ -564,11 +564,12 @@ export async function executeJobSession(instruction: string, jobId: string, last
     })
 
     // Inject time context into the prompt so Agent knows the time window
+    // Inject time context as metadata, not instructions
     let prompt = instruction
     if (lastRunAt) {
-      prompt = `[上次执行时间: ${lastRunAt}] 只查看此时间之后的新内容。\n\n${instruction}`
+      prompt = `[上次执行时间: ${lastRunAt}]\n\n${instruction}`
     } else {
-      prompt = `[首次执行] 只查看过去 2 小时内的内容。\n\n${instruction}`
+      prompt = `[首次执行，当前时间: ${new Date().toISOString()}]\n\n${instruction}`
     }
     const result = await session.sendAndWait({ prompt }, timeoutMs)
     await session.disconnect()

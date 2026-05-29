@@ -176,18 +176,18 @@ async function checkWorkiqAuth(): Promise<boolean> {
 
     // Send initialize + tools/list to verify the server actually works
     const timer = setTimeout(() => {
-      // If alive after 3s, send initialize handshake
+      // If alive after 1.5s, send initialize handshake
       const initMsg = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'aide-check', version: '1.0.0' } } })
       proc.stdin?.write(initMsg + '\n')
       // Then ask for tools list as a real verification
       setTimeout(() => {
         const listMsg = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
         proc.stdin?.write(listMsg + '\n')
-      }, 1000)
-    }, 3000)
+      }, 500)
+    }, 1500)
 
-    // Give total 10s for the whole check
-    const hardTimeout = setTimeout(() => finish(false), 10000)
+    // Give total 8s for the whole check
+    const hardTimeout = setTimeout(() => finish(false), 8000)
 
     proc.stdout?.on('data', (data: Buffer) => {
       buffer += data.toString()

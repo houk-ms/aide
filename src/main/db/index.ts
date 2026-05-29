@@ -172,6 +172,10 @@ function initSchema(db: DatabaseInstance): void {
   if (jobCount.count === 0) {
     seedDefaultJobs(db)
   }
+
+  // Always sync built-in job definitions (instruction/name/cron) on startup
+  // Preserves runtime state (enabled, last_run_at, last_result, last_summary)
+  syncBuiltinJobs(db)
 }
 
 function runMigrations(db: DatabaseInstance): void {
@@ -205,7 +209,7 @@ function runMigrations(db: DatabaseInstance): void {
   `)
 }
 
-const DEFAULT_PERIODIC_POLL_INSTRUCTION = `检查时间窗口内（见上方时间标记）的新邮件、Teams 消息和 GitHub 通知。用 ask_work_iq 时在 prompt 中指定时间范围。
+const DEFAULT_PERIODIC_POLL_INSTRUCTION = `检查上次执行以来的新邮件、Teams 消息和 GitHub 通知（首次执行看过去 24 小时）。用 ask_work_iq 时根据上方时间信息指定查询范围。
 
 对需要我处理的事项创建 Task（附 sourceId）。同时检查已有任务是否已被自行解决（邮件已回、PR 已 merge 等），是则标记 completed。`
 
@@ -222,38 +226,25 @@ function seedDefaultJobs(db: DatabaseInstance): void {
     INSERT INTO jobs (id, name, cron, instruction, enabled)
     VALUES (?, ?, ?, ?, ?)
   `)
+  for (const job of BUILTIN_JOBS) {
+    insert.run(job.id, job.name, job.cron, job.instruction, 1)
+  }
+}
 
-  insert.run(
-    'morning-briefing',
-    '每日开工简报',
-    '0 9 * * 1-5',
-    '检查今天的日历事件、新邮件、Teams 消息和 GitHub 通知。为需要我处理的事项创建 Task（附 sourceId），按优先级排序给出今日建议。',
-    1
-  )
+const BUILTIN_JOBS: { id: string; name: string; cron: string; instruction: string }[] = [
+  { id: 'morning-briefing', name: '每日开工简报', cron: '0 9 * * 1-5', instruction: '检查上次执行以来的新邮件、Teams 消息、GitHub 通知，以及今天的日历事件。为需要我处理的事项创建 Task（附 sourceId），按优先级排序给出今日建议。' },
+  { id: 'periodic-poll', name: '定时轮询', cron: '*/30 * * * *', instruction: DEFAULT_PERIODIC_POLL_INSTRUCTION },
+  { id: 'daily-reconcile', name: '下班前回顾', cron: '0 18 * * 1-5', instruction: '回顾今天的任务状态。将已确认完成但未标记的任务标为 completed。对超过 7 天未动的 P2 任务建议清理。生成简短日报总结。' },
+  { id: 'world-sync', name: '人际关系和项目同步', cron: '0 10 * * 1', instruction: DEFAULT_WORLD_SYNC_INSTRUCTION },
+]
 
-  insert.run(
-    'periodic-poll',
-    '定时轮询',
-    '0 * * * *',
-    DEFAULT_PERIODIC_POLL_INSTRUCTION,
-    1
-  )
-
-  insert.run(
-    'daily-reconcile',
-    '下班前回顾',
-    '0 18 * * 1-5',
-    '回顾今天的任务状态。将已确认完成但未标记的任务标为 completed。对超过 7 天未动的 P2 任务建议清理。生成简短日报总结。',
-    1
-  )
-
-  insert.run(
-    'world-sync',
-    '人脉与项目同步',
-    '0 10 * * 1',
-    DEFAULT_WORLD_SYNC_INSTRUCTION,
-    1
-  )
+function syncBuiltinJobs(db: DatabaseInstance): void {
+  const upsert = db.prepare(`
+    UPDATE jobs SET name = ?, cron = ?, instruction = ? WHERE id = ?
+  `)
+  for (const job of BUILTIN_JOBS) {
+    upsert.run(job.name, job.cron, job.instruction, job.id)
+  }
 }
 
 export function closeDb(): void {

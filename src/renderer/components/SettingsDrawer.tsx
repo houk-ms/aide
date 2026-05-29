@@ -43,7 +43,7 @@ export function SettingsDrawer() {
         {/* Header */}
         <div className="shrink-0 bg-surface-0">
           <div className="flex items-center justify-between pl-5 pr-5 h-[52px]">
-            <h2 className="text-[13px] font-semibold text-text-primary">设置</h2>
+            <h2 className="text-[13px] font-semibold text-text-primary">管理</h2>
             <button onClick={close} className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors">
               <X size={15} strokeWidth={2} />
             </button>
@@ -92,6 +92,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const [cliStatus, setCliStatus] = useState<{ gh: boolean; npx: boolean } | null>(null)
   const [ghAccounts, setGhAccounts] = useState<{ account: string; active: boolean }[]>([])
   const [switching, setSwitching] = useState(false)
+  const [connecting, setConnecting] = useState<string | null>(null)
 
   useEffect(() => {
     window.aide.connections.checkCli().then(setCliStatus)
@@ -186,8 +187,18 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                 <Btn variant="danger" onClick={() => disconnect(conn.type)}>断开</Btn>
               )}
               {!isCliMissing(conn.type) && (
-                <Btn onClick={() => conn.type === 'github' ? window.aide.connections.authenticateGitHub() : window.aide.connections.authenticateMicrosoft()}>
-                  {conn.authenticated ? '重新授权' : '连接'}
+                <Btn
+                  disabled={connecting === conn.type}
+                  onClick={async () => {
+                    setConnecting(conn.type)
+                    try {
+                      if (conn.type === 'github') await window.aide.connections.authenticateGitHub()
+                      else await window.aide.connections.authenticateMicrosoft()
+                    } catch { /* handled via event */ }
+                    finally { setConnecting(null) }
+                  }}
+                >
+                  {connecting === conn.type ? '连接中…' : conn.authenticated ? '重新授权' : '连接'}
                 </Btn>
               )}
             </div>
@@ -566,21 +577,26 @@ function JobForm({ initial, onSave, onCancel, onDelete }: {
 
 function parseCronToSchedule(cron: string) {
   const parts = cron.trim().split(/\s+/)
-  if (parts.length !== 5) return { type: 'interval' as const, interval: 15, hour: 9, minute: 0, weekdays: [1, 2, 3, 4, 5], monthDay: 1 }
+  if (parts.length !== 5) return { type: 'interval' as const, interval: 60, hour: 9, minute: 0, weekdays: [1, 2, 3, 4, 5], monthDay: 1 }
 
   const [min, hr, dom, , dow] = parts
 
-  // */N pattern
+  // */N pattern (e.g. */15 * * * *)
   if (min.startsWith('*/')) {
     return { type: 'interval' as const, interval: parseInt(min.slice(2)) || 15, hour: 9, minute: 0, weekdays: [1, 2, 3, 4, 5], monthDay: 1 }
   }
 
-  const hour = hr === '*' ? 9 : parseInt(hr.split(',')[0]) || 0
+  // Hourly pattern: fixed minute, hour is * (e.g. 0 * * * *, 30 * * * *)
+  if (hr === '*' && dom === '*') {
+    return { type: 'interval' as const, interval: 60, hour: 9, minute: parseInt(min) || 0, weekdays: [1, 2, 3, 4, 5], monthDay: 1 }
+  }
+
+  const hour = parseInt(hr.split(',')[0]) || 0
   const minute = min === '*' ? 0 : parseInt(min) || 0
 
   // Monthly
   if (dom !== '*') {
-    return { type: 'monthly' as const, interval: 15, hour, minute, weekdays: [1, 2, 3, 4, 5], monthDay: parseInt(dom) || 1 }
+    return { type: 'monthly' as const, interval: 60, hour, minute, weekdays: [1, 2, 3, 4, 5], monthDay: parseInt(dom) || 1 }
   }
 
   // Weekly
@@ -592,16 +608,18 @@ function parseCronToSchedule(cron: string) {
       }
       return [parseInt(seg)]
     }).filter(n => n >= 1 && n <= 7)
-    return { type: 'weekly' as const, interval: 15, hour, minute, weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5], monthDay: 1 }
+    return { type: 'weekly' as const, interval: 60, hour, minute, weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5], monthDay: 1 }
   }
 
   // Daily
-  return { type: 'daily' as const, interval: 15, hour, minute, weekdays: [1, 2, 3, 4, 5], monthDay: 1 }
+  return { type: 'daily' as const, interval: 60, hour, minute, weekdays: [1, 2, 3, 4, 5], monthDay: 1 }
 }
 
 function buildCron(type: string, interval: number, hour: number, minute: number, weekdays: number[], monthDay: number): string {
   switch (type) {
-    case 'interval': return `*/${interval} * * * *`
+    case 'interval':
+      if (interval >= 60) return `${minute} * * * *`
+      return `*/${interval} * * * *`
     case 'daily': return `${minute} ${hour} * * *`
     case 'weekly': {
       const sorted = [...weekdays].sort((a, b) => a - b)

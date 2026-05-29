@@ -140,14 +140,14 @@ Renderer 发送消息时先本地插入用户消息；main 保存用户消息和
 | REL-04 | 自动补充关系属性 | Agent 从交互观察沟通偏好、专长等。 | [SKELETON] | docs 有设想，代码无实现。 |
 | REL-05 | 删除后的引用清理 | 删除 relation 后任务/记忆引用不残留。 | [PARTIAL] | task related ids 会清理；memory 中的人物知识不会处理。 |
 
-### 7. Skill / Tool Visibility
+### 7. Skill / Extensibility
 
 | ID | Feature | Expected user experience | Implementation status | Audit notes |
 |---|---|---|---|---|
-| SKILL-01 | 查看内置 Skill/Tool 列表 | Settings 中看到 Agent 能做什么。 | [MISSING] | docs/skill.md 定义 Skill 是 tool UI 分组，但 Settings 没有 Skill tab。 |
-| SKILL-02 | 自定义 Skill | 用户创建/编辑自定义能力。 | [MISSING] | PRODUCT MVP 写了添加/编辑自定义 Skill；skill.md 后来弱化为 UI grouping，两者定义冲突，需要产品决策。 |
+| SKILL-01 | 查看已安装的 Skill / 能力列表 | Settings 中看到 Agent 能做什么、装了哪些 Skill / MCP。 | [MISSING] | docs/skill.md 定义 Skill 为一等扩展单元（和 MCP tool 平级），Settings 尚无 Skill tab。 |
+| SKILL-02 | 安装 / 自定义 Skill | 用户从 MCP Registry / 社区 catalog 安装，或本地创建 / 编辑自定义 Skill。 | [MISSING] | 需要：SKILL.md 加载（SDK skillDirectories）+ MCP 安装流 + marketplace 来源。是可扩展架构的核心。 |
 | SKILL-03 | Tool 注册 | Agent session 注册内部 + MCP tools。 | [PARTIAL] | `buildTools` 存在且 build 已通过；MCP tool discovery/call 仍未运行时验证。 |
-| SKILL-04 | Tool 权限说明 | 用户知道哪些自动、哪些需确认。 | [PARTIAL] | Preferences 有 autonomyLevel，但没有每个 tool 的可见解释。 |
+| SKILL-04 | Tool 权限说明 | 用户知道哪些自动、哪些需确认，以及每个 Skill 声明的 tool 范围。 | [PARTIAL] | Preferences 有 autonomyLevel，但没有每个 tool / Skill 的可见解释。 |
 
 ### 8. Job Module
 
@@ -380,5 +380,5 @@ Renderer 发送消息时先本地插入用户消息；main 保存用户消息和
 1. Morning briefing 显示本次读取范围、创建/更新任务、跳过原因和建议。
 2. 日终对账增加“建议清理”确认卡，而不是只写在 summary 里。
 3. Report view 支持编辑、复制、确认发送。
-4. Skill/Tool 可视化：告诉用户 Agent 能做什么、哪些操作需要确认。
+4. Skill/Tool 可视化：告诉用户 Agent 能做什么、装了哪些 Skill/MCP、哪些操作需要确认；提供从 MCP Registry / 社区 catalog 安装新能力的入口。
 5. 外部来源深链接与权限配置完善：只读/读写、连接级 scope、token refresh。
