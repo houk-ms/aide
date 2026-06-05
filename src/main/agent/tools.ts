@@ -40,6 +40,11 @@ export function buildTools(): Tool<any>[] {
     browserTypeTool,
     browserReadTool,
     browserScreenshotTool,
+    // Desktop automation tools
+    desktopClickTool,
+    desktopTypeTool,
+    desktopShortcutTool,
+    desktopScreenshotTool,
     ...mcpTools
   ]
 }
@@ -736,6 +741,117 @@ const browserScreenshotTool: Tool<any> = {
       const buffer = await browser.takeScreenshot()
       const base64 = buffer.toString('base64')
       return { success: true, imageBase64: base64, mimeType: 'image/png' }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+// ============================================================
+// Desktop Automation Tools — nut.js-based desktop control
+// ============================================================
+
+const desktopClickTool: Tool<any> = {
+  name: 'desktop_click',
+  description: 'Click at a specific position on the screen. Use screen coordinates (pixels from top-left).',
+  parameters: {
+    type: 'object',
+    properties: {
+      x: { type: 'number', description: 'X coordinate (pixels from left edge)' },
+      y: { type: 'number', description: 'Y coordinate (pixels from top edge)' },
+      button: { type: 'string', enum: ['left', 'right'], description: 'Mouse button to click (default: left)' },
+      doubleClick: { type: 'boolean', description: 'Whether to double-click (default: false)' }
+    },
+    required: ['x', 'y']
+  },
+  skipPermission: false,
+  handler: async (args: { x: number; y: number; button?: 'left' | 'right'; doubleClick?: boolean }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: 'Desktop automation is not available.' }
+    }
+    try {
+      if (args.doubleClick) {
+        await desktop.doubleClick(args.x, args.y)
+      } else {
+        await desktop.click(args.x, args.y, args.button || 'left')
+      }
+      return { success: true, message: `Clicked at (${args.x}, ${args.y})` }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopTypeTool: Tool<any> = {
+  name: 'desktop_type',
+  description: 'Type text using the keyboard. Text is typed at the current cursor position.',
+  parameters: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'Text to type' }
+    },
+    required: ['text']
+  },
+  skipPermission: false,
+  handler: async (args: { text: string }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: 'Desktop automation is not available.' }
+    }
+    try {
+      await desktop.typeText(args.text)
+      return { success: true, message: `Typed: "${args.text.substring(0, 50)}${args.text.length > 50 ? '...' : ''}"` }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopShortcutTool: Tool<any> = {
+  name: 'desktop_shortcut',
+  description: 'Press a keyboard shortcut (e.g., Ctrl+C, Cmd+V, Alt+Tab). Use "Cmd" for macOS Command key, "Ctrl" for Windows/Linux Control key.',
+  parameters: {
+    type: 'object',
+    properties: {
+      shortcut: { type: 'string', description: 'Keyboard shortcut to press (e.g., "Ctrl+C", "Cmd+V", "Alt+Tab", "Ctrl+Shift+S")' }
+    },
+    required: ['shortcut']
+  },
+  skipPermission: false,
+  handler: async (args: { shortcut: string }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: 'Desktop automation is not available.' }
+    }
+    try {
+      await desktop.pressShortcut(args.shortcut)
+      return { success: true, message: `Pressed: ${args.shortcut}` }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopScreenshotTool: Tool<any> = {
+  name: 'desktop_screenshot',
+  description: 'Take a screenshot of the entire screen. Saves the image as a PNG file and returns the file path.',
+  parameters: {
+    type: 'object',
+    properties: {}
+  },
+  skipPermission: true,
+  handler: async () => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: 'Desktop automation is not available.' }
+    }
+    try {
+      const size = await desktop.getScreenSize()
+      const filePath = await desktop.takeScreenshot()
+      return {
+        success: true,
+        width: size.width,
+        height: size.height,
+        filePath,
+        message: `Screenshot saved to ${filePath} (${size.width}x${size.height})`
+      }
     } catch (err: any) {
       return { success: false, error: err.message }
     }
