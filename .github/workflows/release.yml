@@ -37,6 +37,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Windows needs MSVC build tools for native modules (bufferutil, etc.)
+      - name: Setup MSVC (Windows)
+        if: matrix.platform == 'win'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install dependencies
         run: npm ci
 
