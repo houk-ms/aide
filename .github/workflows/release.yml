@@ -44,11 +44,26 @@ jobs:
         if: matrix.platform == 'win'
         uses: microsoft/setup-msbuild@v2
 
+      # On Windows, skip postinstall scripts during npm ci (they fail without
+      # proper VS env). We'll run them manually with explicit VS config.
       - name: Install dependencies
-        run: npm ci
-        env:
-          # Tell node-gyp to use VS 2022 on Windows
-          GYP_MSVS_VERSION: ${{ matrix.platform == 'win' && '2022' || '' }}
+        run: npm ci ${{ matrix.platform == 'win' && '--ignore-scripts' || '' }}
+
+      # Windows: manually run the postinstall steps with VS env configured
+      - name: Rebuild native modules (Windows)
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          # Find VS 2022 installation path
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Write-Host "Found VS at: $vsPath"
+          
+          # Import the VS environment
+          Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation
+          
+          # Now rebuild native deps for Electron
+          npx electron-builder install-app-deps
 
       - name: Download Playwright browser
         run: npx playwright install chromium
