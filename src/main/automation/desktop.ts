@@ -76,6 +76,52 @@ export function isDesktopAvailable(): boolean {
 }
 
 /**
+ * Get a helpful error message explaining why desktop automation isn't available
+ * and how to fix it on the current platform.
+ */
+export function getDesktopUnavailableReason(): string {
+  const isPackaged = app.isPackaged
+
+  // First check if nut.js loaded
+  try {
+    getNutJs()
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    
+    // Common error patterns and their fixes
+    if (errorMsg.includes('Could not find') || errorMsg.includes('native') || errorMsg.includes('.node')) {
+      if (isPackaged) {
+        return `Desktop automation failed to initialize. This may be caused by antivirus software blocking the native module, or a corrupted installation. Try reinstalling Aide, or check if your antivirus is blocking the app.`
+      }
+      return `Desktop automation native bindings not found. Run 'npm install' to rebuild native modules for Electron.`
+    }
+    
+    if (isPackaged) {
+      return `Desktop automation failed to load: ${errorMsg}. Try reinstalling Aide or running it as administrator.`
+    }
+    return `Desktop automation failed to load: ${errorMsg}. Try running 'npm install' to rebuild native modules.`
+  }
+
+  // nut.js loaded but environment issues
+  switch (process.platform) {
+    case 'darwin':
+      return `Desktop automation requires accessibility permissions on macOS. Go to System Settings → Privacy & Security → Accessibility, then enable Aide.`
+    case 'linux':
+      if (!process.env.DISPLAY) {
+        return `Desktop automation requires a display server on Linux. Set the DISPLAY environment variable (e.g., DISPLAY=:0). Also ensure xdotool is installed: sudo apt install xdotool`
+      }
+      return `Desktop automation requires xdotool on Linux. Install it with: sudo apt install xdotool`
+    case 'win32':
+      if (isPackaged) {
+        return `Desktop automation failed on Windows. Try running Aide as administrator, or check if antivirus software is blocking it. If the issue persists, try reinstalling Aide.`
+      }
+      return `Desktop automation failed on Windows. Ensure you ran 'npm install' to build native modules. If running as admin doesn't help, try reinstalling @nut-tree-fork/nut-js.`
+    default:
+      return `Desktop automation is not supported on ${process.platform}.`
+  }
+}
+
+/**
  * Move mouse to absolute screen coordinates
  */
 export async function moveMouse(x: number, y: number): Promise<void> {
@@ -273,19 +319,18 @@ export async function takeScreenshot(): Promise<string> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
   const filePath = path.join(screenshotsDir, `screenshot-${timestamp}.png`)
 
-  // Encode RGBA to PNG using native approach
-  // PNG format: signature + IHDR + IDAT (raw) + IEND
-  // For proper PNG encoding, we use a simple uncompressed approach
-  const pngBuffer = encodeRawRgbaToPng(data, width, height)
+  // Encode BGRA to PNG (nut.js returns BGRA on Windows)
+  const pngBuffer = encodeRawBgraToPng(data, width, height)
   fs.writeFileSync(filePath, pngBuffer)
 
   return filePath
 }
 
 /**
- * Encode raw RGBA buffer to PNG format (uncompressed)
+ * Encode raw BGRA buffer to PNG format.
+ * nut.js returns BGRA on Windows, so we convert to RGBA for PNG.
  */
-function encodeRawRgbaToPng(rgba: Buffer, width: number, height: number): Buffer {
+function encodeRawBgraToPng(bgra: Buffer, width: number, height: number): Buffer {
   const { deflateSync } = require('zlib') as typeof import('zlib')
 
   // PNG signature
@@ -303,11 +348,22 @@ function encodeRawRgbaToPng(rgba: Buffer, width: number, height: number): Buffer
   const ihdr = createPngChunk('IHDR', ihdrData)
 
   // IDAT chunk - add filter byte (0) at start of each row, then deflate
+  // Also convert BGRA → RGBA by swapping B and R channels
   const rowSize = width * 4
   const filteredData = Buffer.alloc(height * (1 + rowSize))
   for (let y = 0; y < height; y++) {
     filteredData[y * (1 + rowSize)] = 0 // no filter
-    rgba.copy(filteredData, y * (1 + rowSize) + 1, y * rowSize, (y + 1) * rowSize)
+    const rowStart = y * rowSize
+    const destRowStart = y * (1 + rowSize) + 1
+    for (let x = 0; x < width; x++) {
+      const srcOffset = rowStart + x * 4
+      const destOffset = destRowStart + x * 4
+      // BGRA → RGBA: swap B and R
+      filteredData[destOffset] = bgra[srcOffset + 2]     // R ← B
+      filteredData[destOffset + 1] = bgra[srcOffset + 1] // G ← G
+      filteredData[destOffset + 2] = bgra[srcOffset]     // B ← R
+      filteredData[destOffset + 3] = bgra[srcOffset + 3] // A ← A
+    }
   }
   const compressed = deflateSync(filteredData)
   const idat = createPngChunk('IDAT', compressed)

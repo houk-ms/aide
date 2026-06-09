@@ -7,7 +7,7 @@ import { listJobs, createJob, updateJob, deleteJob, toggleJob } from '../jobs'
 import { showSystemNotification } from '../index'
 import { isJobSession, jobCreatedTaskIds } from './state'
 import { getActiveMcpTools } from './mcp'
-import { browser, desktop, isBrowserAvailable, isDesktopAvailable } from '../automation'
+import { browser, desktop, isBrowserAvailable, isDesktopAvailable, getDesktopUnavailableReason } from '../automation'
 import { listSkills, installSkillFromLocalPath } from '../skills'
 import { browseSkills, installFromMarketplace } from '../skills/sources'
 import { BrowserWindow } from 'electron'
@@ -863,7 +863,7 @@ const desktopClickTool: Tool<any> = {
   skipPermission: false,
   handler: async (args: { x: number; y: number; button?: 'left' | 'right'; doubleClick?: boolean }) => {
     if (!isDesktopAvailable()) {
-      return { success: false, error: 'Desktop automation is not available.' }
+      return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
       if (args.doubleClick) {
@@ -891,7 +891,7 @@ const desktopTypeTool: Tool<any> = {
   skipPermission: false,
   handler: async (args: { text: string }) => {
     if (!isDesktopAvailable()) {
-      return { success: false, error: 'Desktop automation is not available.' }
+      return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
       await desktop.typeText(args.text)
@@ -915,7 +915,7 @@ const desktopShortcutTool: Tool<any> = {
   skipPermission: false,
   handler: async (args: { shortcut: string }) => {
     if (!isDesktopAvailable()) {
-      return { success: false, error: 'Desktop automation is not available.' }
+      return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
       await desktop.pressShortcut(args.shortcut)
@@ -936,7 +936,7 @@ const desktopScreenshotTool: Tool<any> = {
   skipPermission: true,
   handler: async () => {
     if (!isDesktopAvailable()) {
-      return { success: false, error: 'Desktop automation is not available.' }
+      return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
       const size = await desktop.getScreenSize()
