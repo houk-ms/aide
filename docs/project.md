@@ -12,7 +12,7 @@ interface Project {
   repoPath?: string;         // Local code repository path
   docsPath?: string;         // Docs directory path
   techStack?: string;        // Tech stack summary
-  team?: string[];           // Core members (linked to Relation)
+  team?: string[];           // Core members
   notes?: string;            // Project notes added by the Agent/user
   createdAt: Date;
   updatedAt: Date;

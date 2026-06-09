@@ -129,6 +129,79 @@ export interface Job {
   lastSummary: string | null
 }
 
+// === Skill ===
+
+export interface Skill {
+  id: string
+  name: string
+  description: string
+  source: 'local' | 'marketplace'
+  sourceId?: string              // Marketplace source ID (e.g., 'anthropic-official')
+  sourceUrl: string | null
+  verified: boolean              // true if from an official/curated marketplace source
+  enabled: boolean
+  path: string
+  createdAt: string
+  updatedAt: string
+}
+
+// === Marketplace ===
+
+export type MarketplaceSourceType = 'official' | 'community'
+
+export interface MarketplaceSource {
+  id: string
+  name: string
+  type: MarketplaceSourceType
+  url: string                    // Git repo URL (https://github.com/owner/repo)
+  branch: string                 // Default: 'main'
+  enabled: boolean
+  lastSyncedAt: string | null
+  skillCount: number
+}
+
+/** marketplace.json format (Claude standard) */
+export interface MarketplaceManifest {
+  version: string
+  name?: string
+  description?: string
+  skills: MarketplaceSkillEntry[]
+}
+
+export interface MarketplaceSkillEntry {
+  name: string
+  description: string
+  path: string                   // Relative path to SKILL.md
+  category?: string
+  risk?: string                  // Safety hint from the source index (e.g., 'safe')
+  source?: string                // Provenance from the index (e.g., 'community', 'official', a repo URL)
+  dateAdded?: string             // ISO date the entry was added to the catalog
+  setup?: SkillSetup             // Extra setup the skill needs before it works
+}
+
+/** Whether a skill needs manual configuration before it can run. */
+export interface SkillSetup {
+  type: 'none' | 'manual' | string
+  summary?: string               // Human-readable setup steps (when type !== 'none')
+  docs?: string | null           // Optional link to setup docs
+}
+
+/** Skill that can be browsed but not yet installed */
+export interface BrowsableSkill {
+  name: string
+  description: string
+  category?: string
+  sourceId: string
+  sourceName: string
+  sourceType: MarketplaceSourceType
+  path: string                   // Path in the repository
+  installed: boolean
+  risk?: string                  // Safety hint from the source index (e.g., 'safe')
+  source?: string                // Provenance (e.g., 'community', 'official', a repo URL)
+  dateAdded?: string             // ISO date added to the catalog
+  setup?: SkillSetup             // Extra setup the skill needs before it works
+}
+
 // === Models ===
 
 export interface ModelInfo {
@@ -270,6 +343,19 @@ export interface AideAPI {
     get(): Promise<UserPreferences>
     set(prefs: Partial<UserPreferences>): Promise<void>
   }
+  skills: {
+    list(): Promise<Skill[]>
+    get(id: string): Promise<Skill | null>
+    toggle(id: string, enabled: boolean): Promise<Skill>
+    delete(id: string): Promise<void>
+  }
+  marketplace: {
+    listSources(): Promise<MarketplaceSource[]>
+    syncSource(id: string): Promise<MarketplaceSource>
+    syncAll(): Promise<void>
+    browse(sourceId?: string): Promise<BrowsableSkill[]>
+    install(sourceId: string, path: string): Promise<Skill>
+  }
   wechat: {
     getStatus(): Promise<WeChatStatus>
     connect(): Promise<WeChatStatus>
@@ -305,6 +391,11 @@ export interface AideAPI {
     check(): Promise<UpdateState>
     download(): Promise<UpdateState>
     install(): Promise<void>
+  }
+  files: {
+    open(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
+    reveal(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
+    exists(taskId: string | null, ref: string): Promise<boolean>
   }
   system: {
     health(): Promise<{ sdk: 'initializing' | 'ready' | 'error'; sdkError: string | null }>

@@ -21,8 +21,8 @@ const features = [
     icon: <IconSpark width={22} height={22} />,
     kicker: 'Act',
     title: 'Done the way you would',
-    body: 'Draft the reply, summarize the thread, open the PR review. Aide does the work and asks before anything leaves your hands.',
-    points: ['Drafts & summaries', 'Always asks to send', 'You stay in control'],
+    body: 'Draft the reply, summarize the thread, open the PR review — and when a system has no API, Aide drives the browser itself. It does the work and asks before anything leaves your hands.',
+    points: ['Drafts, reviews & PRs', 'Operates web apps directly', 'Always asks before sending'],
   },
 ]
 

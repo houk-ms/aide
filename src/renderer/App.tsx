@@ -13,7 +13,7 @@ import type { AideEvent } from '@shared/types'
 export default function App() {
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null)
   const fetchTasks = useTaskStore(s => s.fetchTasks)
-  const { appendStreamDelta, endStream, fetchHistory, addMessage, addPendingAction, updateToolCall } = useChatStore()
+  const { appendStreamDelta, endStream, clearLive, fetchHistory, addMessage, addPendingAction, updateToolCall } = useChatStore()
   const selectedTaskIdRef = useRef<string | null>(null)
 
   // Keep ref in sync
@@ -49,22 +49,26 @@ export default function App() {
           }
           break
         case 'chat:stream':
-          // Only show stream for the currently active context
-          if (event.taskId === selectedTaskIdRef.current) {
-            appendStreamDelta(event.delta)
-          }
+          // Route to the session's own live buffer — a background session keeps
+          // streaming so switching back to it resumes seamlessly.
+          appendStreamDelta(event.taskId, event.delta)
           break
         case 'chat:stream-end':
-          // Only process stream-end for the currently active context
           if (event.taskId === selectedTaskIdRef.current) {
-            endStream()
-            fetchHistory(selectedTaskIdRef.current)
+            // Active session: atomic swap — stop the spinner, then replace the
+            // live timeline with the freshly-persisted messages in one commit.
+            endStream(event.taskId)
+            fetchHistory(event.taskId, { clearLive: true })
+          } else {
+            // Background session: clear its live buffer now; the persisted reply
+            // loads when the user next opens that session.
+            clearLive(event.taskId)
           }
           break
         case 'chat:error':
           // Show agent errors as messages in the chat
           if (event.taskId === selectedTaskIdRef.current) {
-            endStream()
+            endStream(event.taskId)
             addMessage({
               id: `agent-err-${Date.now()}`,
               role: 'agent',
@@ -78,10 +82,8 @@ export default function App() {
           addPendingAction(event.action)
           break
         case 'chat:tool-use':
-          // Only show tool calls for the currently active context
-          if (event.taskId === selectedTaskIdRef.current) {
-            updateToolCall(event.record)
-          }
+          // Route to the session's own live buffer (background sessions included).
+          updateToolCall(event.taskId, event.record)
           break
         case 'job:completed':
           // Result delivery (desktop chat persistence, WeChat, …) is handled in

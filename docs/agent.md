@@ -21,7 +21,6 @@ The Agent's system prompt is assembled dynamically, not a static string:
 [dynamic] L0 Identity (loaded from Memory, injected every time)
 [dynamic] Current Task context (if there's an active Task)
 [dynamic] Relevant Project summary
-[dynamic] Relevant Relation info
 ```
 
 **Token budget**: the system prompt's total budget is ~3K tokens. Fixed part ~1K, L0 Identity ~0.5K (1K chars ≈ 0.5K tokens), dynamic context ~1K. Everything else is reserved for the conversation.
@@ -31,10 +30,9 @@ The Agent's system prompt is assembled dynamically, not a static string:
 When handling a Task, the following is injected via the SDK's `onSessionStart` hook:
 - The Task's own metadata and source info
 - Relevant docs/code snippets from the associated Project
-- Person info from the associated Relation
 - L1 Knowledge retrieval results (similarity search based on the Task content)
 
-**Truncation priority** (cut from the bottom when over budget): Task metadata > Relation > Project summary > L1 retrieval results. The Task's own information is always kept complete.
+**Truncation priority** (cut from the bottom when over budget): Task metadata > Project summary > L1 retrieval results. The Task's own information is always kept complete.
 
 ### 3. Custom tool definitions
 
@@ -65,12 +63,18 @@ The Agent gains its capabilities through the SDK's Custom Tools mechanism:
 | `get_task_activities` | Read a task's activity timeline | Task |
 | `query_aide_tasks` | Query the Aide task list | Task |
 | `query_projects` | Query projects | Project |
-| `query_relations` | Query relationships | Relation |
 | `manage_project` | Create/update a project | Project |
-| `manage_relation` | Create/update a relationship | Relation |
 | `manage_job` | Create/update a scheduled job | Job |
 | `manage_preferences` | Read/update user preferences | Preferences |
 | `generate_report` | Generate daily/weekly reports | Report |
+| `search_skills` | Search the skill marketplace | Skill |
+| `install_skill` | Install a Skill from the marketplace or a local folder | Skill |
+| `list_installed_skills` | List installed Skills and their enabled state | Skill |
+| `browser_navigate` | Open a URL in the controlled browser | Browser |
+| `browser_click` | Click an element by CSS selector | Browser |
+| `browser_type` | Type text into an input field | Browser |
+| `browser_read` | Read text / current URL / page title | Browser |
+| `browser_screenshot` | Capture the current page as an image | Browser |
 
 **Design questions**:
 - Should the tool list be injected statically or selected dynamically by Task type? (token-cost consideration)
@@ -85,6 +89,10 @@ Beyond built-in Custom Tools, the Agent gains extensible capabilities through th
 - A Skill can declare `allowed_tools`, ship its own local tool, and depend on an MCP server
 
 This turns "adding a new capability" from "changing code" into "installing a Skill / configuring an MCP". See docs/skill.md for details.
+
+### 3.6 Browser automation
+
+The Agent can drive a real Chromium browser (via Playwright) to operate web apps that have no API. The browser launches visibly so the user can watch what happens. Exposed through the `browser_navigate` / `browser_click` / `browser_type` / `browser_read` / `browser_screenshot` tools, with the browser lifecycle (launch, isolated context, cleanup) managed internally. Screen understanding via vision and full mouse/keyboard computer-use are still on the roadmap.
 
 ### 4. Autonomy-level control
 

@@ -15,7 +15,7 @@ Four jobs are seeded on first run (definitions are re-synced from code on every 
 | Daily morning briefing (`morning-briefing`) | `0 9 * * 1-5` | Pulls new email/Teams/GitHub since the last run plus today's calendar; creates Tasks for items needing action and gives a prioritized summary. Has a dedicated startup catch-up. |
 | Periodic poll (`periodic-poll`) | `*/30 * * * *` | Every 30 minutes, checks for new information and creates/updates Tasks when found. |
 | End-of-day review (`daily-reconcile`) | `0 18 * * 1-5` | Reviews the day's task statuses, marks confirmed-done tasks complete, suggests cleaning up stale P2 tasks, and generates a daily summary. |
-| Relationships & projects sync (`world-sync`) | `0 10 * * 1` | Weekly (Monday) bootstrap/refresh of Relations and Projects. Also triggered once at the end of onboarding. |
+| Projects sync (`world-sync`) | `0 10 * * 1` | Weekly (Monday) bootstrap/refresh of Projects. Also triggered once at the end of onboarding. |
 
 ## Execution model
 

@@ -57,7 +57,9 @@ A personal AI agent that helps you see the full picture of your work, continuous
 
 - **Aggregate** — automatically collect, organize, and track tasks from all your work systems, unified in one place
 - **Understand** — proactively and continuously build an understanding of your projects, people, and history, so you never have to re-explain context
-- **Act** — handle tasks the way you would, using that context: prioritize, communicate, execute, deliver
+- **Act** — handle tasks the way you would: prioritize, communicate, execute, deliver — operating connected systems through their APIs, and driving a browser directly when a system has no API
+
+Two things keep this open-ended: Aide **runs in the background and reaches you across your messengers** (WeChat, Telegram, Discord, WhatsApp), and its abilities **grow through installable Skills** rather than being fixed in code.
 
 ## 4. User scenarios
 
@@ -93,16 +95,12 @@ The agent reviews all of today's information flow: some tasks the user already h
 
 **Connection** — an external system Aide is linked to; comes in two kinds, **Source** and **Channel** (see "Sources & Channels" below)
 - A **Source** is where Aide reads work from and writes actions back (Outlook, Teams, GitHub, ADO, SharePoint, Calendar, …) — it drives Task discovery
-- A **Channel** is how Aide reaches you and takes commands outside the app (Aide chat built-in; WeChat / Telegram / Slack / Discord remote) — it delivers Job results and receives remote instructions
+- A **Channel** is how Aide reaches you and takes commands outside the app (Aide chat built-in; WeChat / Telegram / Discord / WhatsApp remote) — it delivers Job results and receives remote instructions
 - Capabilities: read information, and (once authorized) perform write actions
 
 **Project** — the user's work project
 - Contents: code repository, project docs, wiki
 - Purpose: provide background knowledge when the agent handles a Task
-
-**Relation** — the user's network of working relationships
-- Attributes: role (manager/peer/report/external), communication preferences, time zone, expertise
-- Purpose: help the agent judge task priority, choose the communication channel, and identify the delivery target
 
 **Skill** — an extensible capability unit, peer to MCP tools
 - Types: built-in (email drafting, summarization, code generation, etc.) + MCP servers + community / user-defined
@@ -151,7 +149,6 @@ Information collection (passive):
 
 When the Agent handles a Task:
   read Project (project context)
-  read Relation (working relationships)
   read Memory (past experience)
   select Skill (execution capability)
   call Connection (read/write external systems)
@@ -161,7 +158,7 @@ Memory accumulation:
   Information observed by the Agent --[distill]--> Memory
 
 Result delivery (proactive, outbound):
-  Job / Task result --[deliver]--> Channel (Aide chat / WeChat) --> User
+  Job / Task result --[deliver]--> Channel (Aide chat / messengers) --> User
 
 Remote command (passive, inbound):
   User message via Channel --[instruction]--> Agent --[handle]--> Task
@@ -171,7 +168,7 @@ Remote command (passive, inbound):
 
 ### General principle
 
-Every entity (Task, Connection, Project, Relation, Skill, Job, Memory) can be created and maintained two ways:
+Every entity (Task, Connection, Project, Skill, Job, Memory) can be created and maintained two ways:
 1. **By the agent** — the user instructs the agent in conversation, or the agent discovers, creates, and updates things automatically from the daily information flow
 2. **By the user in the UI** — the user views, edits, and manages directly through the interface
 
@@ -190,17 +187,13 @@ Every entity (Task, Connection, Project, Relation, Skill, Job, Memory) can be cr
 
 ### Channel
 
-- Connect / disconnect chat channels (WeChat / Telegram / Slack / Discord now; WhatsApp / Messenger later)
+- Connect / disconnect chat channels (WeChat / Telegram / Discord / WhatsApp now; more messengers later)
 - Two-way: receive the Agent's pushes and send it commands remotely (slash commands `/tasks`, `/report`, `/done`, `/setup`, `/help`)
-- Per-Job choice of which channels receive that Job's result (Aide chat / WeChat / Telegram / Slack / Discord / none)
+- Per-Job choice of which channels receive that Job's result (Aide chat / WeChat / Telegram / Discord / WhatsApp / none)
 
 ### Project
 
 - Configure project context (point to the code repo, docs directory, etc.)
-
-### Relation
-
-- Set role, communication preferences, time zone, expertise, and other attributes
 
 ### Skill
 
@@ -212,7 +205,7 @@ Every entity (Task, Connection, Project, Relation, Skill, Job, Memory) can be cr
 ### Job
 
 - Create / edit / delete scheduled jobs (including run-frequency configuration)
-- Choose where each Job delivers its result (Aide chat / WeChat / none)
+- Choose where each Job delivers its result (Aide chat / WeChat / Telegram / Discord / WhatsApp / none)
 - View Job run history
 
 ### Memory
@@ -227,7 +220,7 @@ A standalone desktop app, conversation-first with a supporting Dashboard.
 The app contains:
 - **Dashboard** — shows the full task picture, status overview, and the agent's briefing; the entry point for "seeing"
 - **Chat window** — tell the agent things, give instructions, ask questions, confirm results; the entry point for "doing"
-- **Settings pages** — manage Connections (Sources & Channels), Projects, Relations, Skills, Jobs, Memory
+- **Settings pages** — manage Connections (Sources & Channels), Projects, Skills, Jobs, Memory
 
 Users can click a task from the Dashboard to enter the conversation, or simply describe it in chat and let the agent identify the matching task. All configuration can be done through the UI or by asking the agent.
 
@@ -241,20 +234,12 @@ Users can click a task from the Dashboard to enter the conversation, or simply d
 | Storage | Local SQLite + filesystem | No server needed, sufficient for a single-user scenario, easy to migrate and back up |
 | Language | TypeScript everywhere | Unifies Electron + Copilot SDK + MCP; one language throughout |
 
-## 9. MVP scope
-
-The full scope defined in sections 1–8 is the MVP. Goal: be usable for my own daily work.
-
-## 10. Roadmap (post-MVP)
+## 9. Roadmap
 
 | Direction | Description |
 |------|------|
-| Permission control system | Configure autonomy level by action type/source: which actions the agent runs automatically, which need confirmation |
-| External channel integration | Receive instructions and reports via WeChat/Telegram/Slack, without opening the app (WeChat channel done; Telegram/Slack next) |
-| Agent self-improvement | Learn from execution feedback; automatically create, install, and maintain skills |
-| Heartbeat proactive reporting | The agent periodically checks and pushes changes worth your attention |
-| Browser control | The agent drives the browser via Playwright/CDP: auto-fill forms, scrape web content, operate web apps (ADO, SharePoint, internal systems) |
-| System app control | The agent controls local desktop apps: read/write the filesystem, operate Excel/Word/PowerPoint, run terminal commands |
-| Screen understanding | Understand on-screen content via screenshots + vision models, enabling the agent to act in any GUI scenario |
-| Computer use | Full mouse/keyboard control — click, drag, type — so the agent can operate any app without an API, like a human |
+| Agent self-improvement | Learn from execution feedback: refine its memory (correct past assumptions, distill new lessons) and evolve its capabilities (create, install, and maintain skills) |
+| Browser control | **Basic automation shipped**: the agent drives a real Chromium browser via Playwright (navigate, click, type, read, screenshot) to operate web apps without an API. Next: richer scraping and resilient selectors for ADO, SharePoint, internal systems |
+| System app control | The agent operates local apps and the OS through scripting / APIs: read/write the filesystem, automate Excel/Word/PowerPoint, run terminal commands — deterministic, no vision needed |
+| Computer use | When there's no API, the agent operates any GUI like a human: perceive the screen with vision models and control mouse/keyboard (click, drag, type) |
 | Workflow orchestration | Compose multi-step actions (across browser + system + API) into reusable workflows: define once, run repeatedly |

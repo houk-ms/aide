@@ -76,9 +76,9 @@ This turns "adding a new capability" from "changing code" into "installing a Ski
 | Source | Description |
 |------|------|
 | **Built-in Skills** | Shipped with Aide, covering core scenarios (email drafting, summarization, daily reports, etc.) |
-| **MCP Registry** | Search `registry.modelcontextprotocol.io` directly and install an MCP server as a tool provider with one click |
-| **Community Skill catalog** | A git-based catalog (similar to agentskills.io / the Claude community marketplace) that can be published to / installed from |
-| **Local / project Skills** | User-defined, placed in `~/.aide/skills/` or the project-level `.aide/skills/` |
+| **Community Skill catalog** | **Shipped**: an in-app marketplace (Settings → Skills) backed by a git-based community catalog, with search, pagination, and one-click install. Exposed to the agent via `search_skills` / `install_skill` / `list_installed_skills`. |
+| **MCP Registry** | Planned: search `registry.modelcontextprotocol.io` directly and install an MCP server as a tool provider with one click |
+| **Local / project Skills** | User-defined, installed from a local folder containing `SKILL.md` (or placed in `~/.aide/skills/`) |
 
 ## Existing tool inventory (built-in core capabilities)
 
@@ -88,7 +88,7 @@ The following built-in tools are not provided through Skills; they are the Agent
 |------|-------|
 | Work IQ MCP | ask_work_iq, fetch_work_iq, search_paths_work_iq, get_schema_work_iq, create_entity_work_iq, update_entity_work_iq, delete_entity_work_iq, do_action_work_iq, fetch_blob_work_iq, upload_blob_work_iq |
 | GitHub MCP | list_issues, create_issue, create_pr, review_pr |
-| Internal modules | create_task, update_task, query_tasks, memory_write, memory_search, manage_job, manage_preferences, generate_report |
+| Internal modules | create_task, update_task, query_tasks, memory_write, memory_search, manage_job, manage_preferences, generate_report, search_skills, install_skill, list_installed_skills, browser_navigate, browser_click, browser_type, browser_read, browser_screenshot |
 
 ## Relationship with the existing system
 
@@ -111,5 +111,6 @@ Tools a Skill ships or depends on also go through the SDK's permission system:
 1. **The implementation language for Skill tools**: TypeScript (same stack as Aide) or any language (via stdio/MCP)?
 2. **Version management**: semver + lockfile, or a lightweight git ref?
 3. **Security review**: how to sandbox / restrict the tool code of community Skills?
-4. **UI presentation**: is the marketplace UI in-app or web?
-5. **Paid Skills**: do we need to consider monetization?
+4. **Paid Skills**: do we need to consider monetization?
+
+> Resolved: the marketplace UI ships in-app (Settings → Skills), not as a separate web surface.

@@ -9,7 +9,7 @@ Connections come in two kinds (the concept and rationale live in PRODUCT.md §So
 | Kind | Examples | Transport |
 |------|----------|-----------|
 | **Source** | Work IQ (M365), GitHub | MCP |
-| **Channel** | Aide chat (built-in), WeChat / Telegram / Slack / Discord | Built-in IPC (Aide chat) / per-channel bot API |
+| **Channel** | Aide chat (built-in), WeChat / Telegram / Discord / WhatsApp | Built-in IPC (Aide chat) / per-channel bot API |
 
 The rest of this doc covers Sources (the MCP layer). For channel setup see docs/channel-setup.md; for Job result delivery see docs/job.md and docs/ui.md.
 

@@ -29,6 +29,14 @@ jobs:
         with:
           node-version: 20
 
+      # node-gyp (bundled with @electron/rebuild) imports the stdlib `distutils`
+      # module, which was removed in Python 3.12. The runner default Python is
+      # now 3.12+, so native deps (e.g. bufferutil) fail to rebuild. Pin 3.11,
+      # which still ships distutils.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         run: npm ci
 

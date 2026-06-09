@@ -224,7 +224,11 @@ export function listTaskActivities(taskId: string): TaskActivity[] {
 
 export function markTaskSeen(id: string): void {
   const db = getDb()
-  db.prepare('UPDATE tasks SET seen_at = ? WHERE id = ? AND seen_at IS NULL')
+  // Always bump seenAt to "now" on open. The unread-activity dot is computed as
+  // lastActivityAt > seenAt, so a stale seenAt would keep the dot lit forever
+  // once a background job adds activity. Refreshing it each open lets opening
+  // the task actually clear the dot (until new activity arrives).
+  db.prepare('UPDATE tasks SET seen_at = ? WHERE id = ?')
     .run(new Date().toISOString(), id)
 }
 

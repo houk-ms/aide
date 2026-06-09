@@ -125,13 +125,12 @@ Not a page — a right-side overlay (`620px`) titled **Manage**, opened from the
   - **Channels** (how Aide reaches you and takes commands): WeChat — QR sign-in, connection status, two-way chat
 - **Jobs** — scheduled background jobs (toggles / frequency / per-job result delivery)
 - **Projects** — project list and linked repos/docs
-- **Contacts** — relationship (people) configuration
 - **Memory** — browse/edit/delete the Agent's stored memories
 - **Preferences** — language, theme, notification preferences
 
 ## Onboarding (`OnboardingWizard`)
 
-Shown full-screen when `preferences.onboardingComplete` is false. Steps: **Welcome → GitHub → Microsoft → Done**. On finish it sets `onboardingComplete` and kicks off the `world-sync` job to bootstrap relations and projects.
+Shown full-screen when `preferences.onboardingComplete` is false. Steps: **Welcome → GitHub → Microsoft → Done**. On finish it sets `onboardingComplete` and kicks off the `world-sync` job to bootstrap projects.
 
 ## Event-driven updates
 

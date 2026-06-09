@@ -45,7 +45,6 @@ interface Task {
 
   // Associations
   projectId?: string;
-  relatedRelationIds: string[];
 
   // Time
   createdAt: Date;
@@ -96,7 +95,6 @@ The same thing may arrive from multiple channels (an email and a Teams message a
 ## Prioritization
 
 The Agent sorts automatically based on:
-- The sender's role (Relation: manager > peer > external)
 - Whether there's an explicit deadline
 - Whether it's been chased
 - The importance of the associated project

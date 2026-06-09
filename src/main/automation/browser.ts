@@ -44,13 +44,20 @@ function getChromiumPath(): string | undefined {
   const chromiumBase = path.join(browsersDir, chromiumDir)
 
   // Platform-specific executable path
+  // Note: Playwright 1.50+ uses chrome-win64/chrome-mac-arm64 on some platforms
   let execPath: string
   switch (process.platform) {
     case 'darwin':
-      execPath = path.join(chromiumBase, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium')
+      // Try arm64 first, then x64
+      const macArm64 = path.join(chromiumBase, 'chrome-mac-arm64', 'Chromium.app', 'Contents', 'MacOS', 'Chromium')
+      const macX64 = path.join(chromiumBase, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium')
+      execPath = fs.existsSync(macArm64) ? macArm64 : macX64
       break
     case 'win32':
-      execPath = path.join(chromiumBase, 'chrome-win', 'chrome.exe')
+      // Try win64 first (Playwright 1.50+), then win (older versions)
+      const win64 = path.join(chromiumBase, 'chrome-win64', 'chrome.exe')
+      const win32 = path.join(chromiumBase, 'chrome-win', 'chrome.exe')
+      execPath = fs.existsSync(win64) ? win64 : win32
       break
     case 'linux':
       execPath = path.join(chromiumBase, 'chrome-linux', 'chrome')

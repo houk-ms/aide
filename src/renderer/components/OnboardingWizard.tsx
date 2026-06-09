@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { Sparkles, Github, Shield, Check, ArrowRight, ArrowLeft, Copy, Loader2, Send } from 'lucide-react'
-import { CHANNELS, ChannelCard } from '../channels/registry'
+import { ChannelPicker } from '../channels/registry'
 import { MicrosoftLogo } from '../brand/icons'
-import type { ConnectionStatus } from '@shared/types'
+import type { ConnectionStatus, AideEvent } from '@shared/types'
 
-type Step = 'welcome' | 'github' | 'microsoft' | 'channels' | 'done'
+type Step = 'welcome' | 'sources' | 'channels' | 'done'
+const STEPS: Step[] = ['welcome', 'sources', 'channels', 'done']
 
 interface Props {
   onComplete: () => void
@@ -27,12 +28,10 @@ export function OnboardingWizard({ onComplete }: Props) {
     return unsub
   }, [])
 
-  const isConnected = (type: string) => connections.find(c => c.type === type)?.authenticated ?? false
   const isVerified = (type: string) => connections.find(c => c.type === type)?.verified ?? false
 
   const refreshConnections = useCallback(async () => {
-    const status = await window.aide.connections.getStatus()
-    setConnections(status)
+    setConnections(await window.aide.connections.getStatus())
   }, [])
 
   const finish = useCallback(async () => {
@@ -42,7 +41,6 @@ export function OnboardingWizard({ onComplete }: Props) {
     onComplete()
   }, [onComplete])
 
-  const STEPS: Step[] = ['welcome', 'github', 'microsoft', 'channels', 'done']
   const goBack = useCallback(() => {
     const idx = STEPS.indexOf(step)
     if (idx > 0) setStep(STEPS[idx - 1])
@@ -64,24 +62,13 @@ export function OnboardingWizard({ onComplete }: Props) {
           </button>
         )}
 
-        {step === 'welcome' && <WelcomeStep onNext={() => setStep('github')} />}
-        {step === 'github' && (
-          <GitHubStep
-            connected={isConnected('github')}
-            activeAccount={connections.find(c => c.type === 'github')?.activeAccount || null}
+        {step === 'welcome' && <WelcomeStep onNext={() => setStep('sources')} />}
+        {step === 'sources' && (
+          <SourcesStep
+            connections={connections}
             ghInstalled={cliStatus.gh}
             onRefresh={refreshConnections}
-            onNext={() => setStep('microsoft')}
-            onSkip={() => setStep('microsoft')}
-          />
-        )}
-        {step === 'microsoft' && (
-          <MicrosoftStep
-            connected={isConnected('workiq')}
-            verified={isVerified('workiq')}
-            onRefresh={refreshConnections}
             onNext={() => setStep('channels')}
-            onSkip={() => setStep('channels')}
           />
         )}
         {step === 'channels' && (
@@ -90,16 +77,14 @@ export function OnboardingWizard({ onComplete }: Props) {
             onSkip={() => setStep('done')}
           />
         )}
-        {step === 'done' && <DoneStep onFinish={finish} allVerified={isVerified('github') || isVerified('workiq')} />}
+        {step === 'done' && <DoneStep onFinish={finish} anyVerified={isVerified('github') || isVerified('workiq')} />}
 
         {/* Progress dots */}
         <div className="flex justify-center gap-2 mt-8">
-          {(['welcome', 'github', 'microsoft', 'channels', 'done'] as Step[]).map(s => (
+          {STEPS.map(s => (
             <div
               key={s}
-              className={`w-2 h-2 rounded-full transition-colors ${
-                s === step ? 'bg-accent' : 'bg-surface-2'
-              }`}
+              className={`w-2 h-2 rounded-full transition-colors ${s === step ? 'bg-accent' : 'bg-surface-2'}`}
             />
           ))}
         </div>
@@ -112,7 +97,7 @@ export function OnboardingWizard({ onComplete }: Props) {
 
 function WelcomeStep({ onNext }: { onNext: () => void }) {
   return (
-    <div className="text-center">
+    <div className="text-center anim-fade-up">
       <div className="w-16 h-16 rounded-2xl overflow-hidden mx-auto mb-6 shadow-md">
         <svg viewBox="0 0 512 512" className="w-full h-full">
           <defs><linearGradient id="aide-ob" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0%" stopColor="#4A7FF7"/><stop offset="100%" stopColor="#3B5EE6"/></linearGradient></defs>
@@ -123,8 +108,8 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
       </div>
       <h1 className="text-[22px] font-bold text-text-primary mb-3">Welcome to Aide</h1>
       <p className="text-[14px] text-text-secondary leading-relaxed mb-8">
-        See the full picture of your work, build up context over time,<br />
-        and get help with tasks scattered across email, Teams, and GitHub.
+        See the full picture of your work and get help with<br />
+        tasks scattered across everything you work with.
       </p>
       <button
         onClick={onNext}
@@ -137,358 +122,261 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
   )
 }
 
-// === GitHub (via gh CLI) ===
+// === Sources (connect everything) ===
 
-function GitHubStep({ connected, activeAccount, ghInstalled, onRefresh, onNext, onSkip }: {
-  connected: boolean
-  activeAccount: string | null
+interface SourceDef {
+  type: 'github' | 'workiq'
+  name: string
+  description: string
+  icon: React.ReactNode
+  accentClass: string
+  authenticate: () => Promise<void>
+}
+
+const SOURCES: SourceDef[] = [
+  {
+    type: 'github',
+    name: 'GitHub',
+    description: 'Issues, pull requests, and repos',
+    icon: <Github size={18} className="text-white" />,
+    accentClass: 'bg-zinc-800 text-white',
+    authenticate: () => window.aide.connections.authenticateGitHub(),
+  },
+  {
+    type: 'workiq',
+    name: 'Microsoft 365',
+    description: 'Email, calendar, Teams, and OneDrive',
+    icon: <MicrosoftLogo size={18} />,
+    accentClass: 'bg-blue-500/10',
+    authenticate: () => window.aide.connections.authenticateMicrosoft(),
+  },
+]
+
+function SourcesStep({ connections, ghInstalled, onRefresh, onNext }: {
+  connections: ConnectionStatus[]
   ghInstalled: boolean
   onRefresh: () => Promise<void>
   onNext: () => void
-  onSkip: () => void
 }) {
-  const [status, setStatus] = useState<'idle' | 'waiting' | 'success' | 'error' | 'no-cli'>('idle')
+  const connectedCount = SOURCES.filter(s => connections.find(c => c.type === s.type)?.authenticated).length
+
+  return (
+    <div className="text-center anim-fade-up">
+      <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto mb-5">
+        <Sparkles size={26} className="text-accent" />
+      </div>
+      <h2 className="text-[18px] font-bold text-text-primary mb-2">Connect your work</h2>
+      <p className="text-[13px] text-text-secondary mb-6">
+        The more Aide can see, the more it can help. Connect everything you work with.
+      </p>
+
+      <div className="space-y-3 text-left">
+        {SOURCES.map(source => (
+          <SourceCard
+            key={source.type}
+            source={source}
+            connection={connections.find(c => c.type === source.type) ?? null}
+            ghInstalled={ghInstalled}
+            onRefresh={onRefresh}
+          />
+        ))}
+      </div>
+
+      <button
+        onClick={onNext}
+        className="inline-flex items-center gap-2 px-6 py-2.5 mt-6 bg-accent text-white text-[13px] font-medium rounded-xl hover:bg-accent/90 transition-colors"
+      >
+        Continue <ArrowRight size={16} />
+      </button>
+      <p className="mt-4 text-[12px] text-text-tertiary">
+        {connectedCount === SOURCES.length
+          ? 'All sources connected — nice.'
+          : connectedCount > 0
+          ? 'You can connect the rest now or anytime in Settings.'
+          : 'You can also do this later in Settings.'}
+      </p>
+    </div>
+  )
+}
+
+function SourceCard({ source, connection, ghInstalled, onRefresh }: {
+  source: SourceDef
+  connection: ConnectionStatus | null
+  ghInstalled: boolean
+  onRefresh: () => Promise<void>
+}) {
+  const [phase, setPhase] = useState<'idle' | 'waiting' | 'error'>('idle')
   const [userCode, setUserCode] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
-  useEffect(() => {
-    if (connected) setStatus('success')
-    else if (!ghInstalled) setStatus('no-cli')
-  }, [connected, ghInstalled])
+  const connected = connection?.authenticated ?? false
+  const verified = connection?.verified ?? false
+  const activeAccount = connection?.activeAccount ?? null
+  const noCli = source.type === 'github' && !ghInstalled
 
-  // Listen for auth-progress and connection:status events
+  // While waiting, capture the device code and watch for the connection to settle.
   useEffect(() => {
-    if (status !== 'waiting') return
-    const unsub = window.aideEvents.on((event) => {
-      if (event.type === 'connection:auth-progress' && event.connectionType === 'github') {
+    if (phase !== 'waiting') return
+    const unsub = window.aideEvents.on((event: AideEvent) => {
+      if (event.type === 'connection:auth-progress' && event.connectionType === source.type) {
         setUserCode(event.userCode)
         navigator.clipboard.writeText(event.userCode).then(() => {
           setCopied(true)
           setTimeout(() => setCopied(false), 3000)
-        })
+        }).catch(() => {})
       }
       if (event.type === 'connection:status') {
-        const gh = event.connections.find(c => c.type === 'github')
-        if (gh?.authenticated) {
-          setStatus('success')
+        const c = event.connections.find(x => x.type === source.type)
+        if (c?.authenticated) {
+          setPhase('idle')
+          setUserCode(null)
           onRefresh()
         }
       }
     })
     return unsub
-  }, [status, onRefresh])
+  }, [phase, source.type, onRefresh])
 
   const startAuth = useCallback(async () => {
-    setStatus('waiting')
+    setPhase('waiting')
     setUserCode(null)
     try {
-      await window.aide.connections.authenticateGitHub()
-      setStatus('success')
+      await source.authenticate()
       await onRefresh()
+      setPhase('idle')
     } catch {
-      setStatus('error')
+      setPhase('error')
     }
-  }, [onRefresh])
+  }, [source, onRefresh])
 
   const copyCode = useCallback(() => {
-    if (userCode) {
-      navigator.clipboard.writeText(userCode)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
+    if (!userCode) return
+    navigator.clipboard.writeText(userCode).catch(() => {})
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }, [userCode])
 
+  const statusLabel = connected
+    ? verified
+      ? `Connected${activeAccount ? ` · ${activeAccount}` : ''}`
+      : 'Signed in · verifying permissions'
+    : phase === 'waiting'
+    ? 'Waiting for authorization…'
+    : noCli
+    ? 'GitHub CLI required'
+    : 'Recommended'
+
+  const statusColor = connected
+    ? verified ? 'text-success' : 'text-warning'
+    : noCli ? 'text-danger' : 'text-accent'
+
+  const dotColor = connected
+    ? verified ? 'bg-success' : 'bg-warning'
+    : noCli ? 'bg-danger' : 'bg-accent'
+
   return (
-    <div className="text-center">
-      <div className="w-14 h-14 rounded-2xl bg-zinc-800 flex items-center justify-center mx-auto mb-5">
-        <Github size={28} className="text-white" />
-      </div>
-      <h2 className="text-[18px] font-bold text-text-primary mb-2">Connect GitHub</h2>
-      <p className="text-[13px] text-text-secondary mb-6">
-        Keep an eye on your issues and PRs so Aide stays on top of your code.
-      </p>
-
-      {status === 'idle' && (
-        <div className="space-y-3">
-          <button
-            onClick={startAuth}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-zinc-800 text-white text-[13px] font-medium rounded-xl hover:bg-zinc-700 transition-colors"
-          >
-            <Github size={16} /> Connect GitHub
-          </button>
-          <p className="text-[11px] text-text-tertiary">
-            Your browser will open the GitHub authorization page
-          </p>
-        </div>
-      )}
-
-      {status === 'waiting' && (
-        <div className="space-y-4">
-          {userCode ? (
-            <>
-              <p className="text-[13px] text-text-secondary">Enter this code in your browser:</p>
-              <div className="flex items-center justify-center gap-3">
-                <code className="text-[24px] font-mono font-bold text-text-primary tracking-[0.15em] bg-surface-1 px-5 py-2.5 rounded-xl border border-edge">
-                  {userCode}
-                </code>
-                <button
-                  onClick={copyCode}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-surface-1 transition-colors"
-                  title="Copy"
-                >
-                  {copied ? <Check size={16} className="text-success" /> : <Copy size={16} />}
-                </button>
-              </div>
-              <p className="text-[11px] text-text-tertiary">
-                {copied ? '✓ Copied to clipboard' : 'The code was copied to your clipboard automatically'}
-              </p>
-            </>
-          ) : (
-            <p className="text-[13px] text-text-tertiary">Starting authentication…</p>
-          )}
-          <div className="flex items-center justify-center gap-2 text-[12px] text-text-tertiary">
-            <Loader2 size={14} className="animate-spin" /> Waiting for authorization…
-          </div>
-        </div>
-      )}
-
-      {status === 'success' && (
-        <div className="space-y-4">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-success/10 text-success rounded-xl text-[13px] font-medium">
-            <Check size={16} /> GitHub connected{activeAccount ? ` · ${activeAccount}` : ''}
+    <div
+      className={`p-4 rounded-xl border transition-all duration-300 ${
+        connected
+          ? verified ? 'bg-success/[0.04] border-success/25' : 'bg-warning/[0.04] border-warning/25'
+          : 'bg-surface-0 border-edge'
+      }`}
+    >
+      <div className="flex items-start justify-between">
+        <div className="flex items-start gap-3">
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${source.accentClass}`}>
+            {source.icon}
           </div>
           <div>
-            <button
-              onClick={onNext}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-[13px] font-medium rounded-xl hover:bg-accent/90 transition-colors"
-            >
-              Continue <ArrowRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {status === 'error' && (
-        <div className="space-y-3">
-          <p className="text-[12px] text-danger">Connection failed. Make sure the gh CLI is installed and try again.</p>
-          <button
-            onClick={() => { setStatus('idle'); setUserCode(null) }}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-zinc-800 text-white text-[13px] font-medium rounded-xl hover:bg-zinc-700 transition-colors"
-          >
-            <Github size={16} /> Retry
-          </button>
-        </div>
-      )}
-
-      {status === 'no-cli' && (
-        <div className="space-y-4">
-          <div className="p-4 rounded-xl bg-surface-1 border border-edge text-left">
-            <p className="text-[13px] text-text-primary font-medium mb-2">GitHub CLI required</p>
-            <p className="text-[12px] text-text-secondary leading-relaxed mb-3">
-              Aide connects to GitHub through the <code className="text-[11px] bg-surface-2 px-1 py-0.5 rounded">gh</code> command-line tool. Please install it first:
-            </p>
-            <div className="space-y-1.5 text-[12px] text-text-secondary">
-              <p>• Windows: <code className="bg-surface-2 px-1 py-0.5 rounded text-[11px]">winget install GitHub.cli</code></p>
-              <p>• macOS: <code className="bg-surface-2 px-1 py-0.5 rounded text-[11px]">brew install gh</code></p>
-              <p>• Or visit <a href="https://cli.github.com" className="text-accent hover:underline" onClick={e => { e.preventDefault(); window.open('https://cli.github.com') }}>cli.github.com</a></p>
+            <p className="text-[13px] font-medium text-text-primary">{source.name}</p>
+            <p className="text-[12px] text-text-tertiary mt-0.5">{source.description}</p>
+            <div className="flex items-center gap-1.5 mt-1.5">
+              <div className={`w-[6px] h-[6px] rounded-full ${dotColor}`} />
+              <span className={`text-[11px] ${statusColor}`}>{statusLabel}</span>
             </div>
           </div>
-          <p className="text-[11px] text-text-tertiary">Restart Aide after installing to connect</p>
         </div>
-      )}
-
-      {status !== 'success' && (
-        <button onClick={onSkip} className="block mx-auto mt-5 text-[12px] text-text-tertiary hover:text-text-secondary transition-colors">
-          Skip for now
-        </button>
-      )}
-    </div>
-  )
-}
-
-// === Microsoft 365 (via workiq CLI) ===
-
-function MicrosoftStep({ connected, verified, onRefresh, onNext, onSkip }: {
-  connected: boolean
-  verified: boolean
-  onRefresh: () => Promise<void>
-  onNext: () => void
-  onSkip: () => void
-}) {
-  const [status, setStatus] = useState<'idle' | 'waiting' | 'success' | 'partial' | 'error'>('idle')
-  const [userCode, setUserCode] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
-
-  useEffect(() => {
-    if (connected) setStatus(verified ? 'success' : 'partial')
-  }, [connected, verified])
-
-  // Listen for auth-progress and connection:status events
-  useEffect(() => {
-    if (status !== 'waiting') return
-    const unsub = window.aideEvents.on((event) => {
-      if (event.type === 'connection:auth-progress' && event.connectionType === 'workiq') {
-        setUserCode(event.userCode)
-        navigator.clipboard.writeText(event.userCode).then(() => {
-          setCopied(true)
-          setTimeout(() => setCopied(false), 3000)
-        })
-      }
-      if (event.type === 'connection:status') {
-        const ms = event.connections.find(c => c.type === 'workiq')
-        if (ms?.authenticated) {
-          setStatus(ms.verified ? 'success' : 'partial')
-          onRefresh()
-        }
-      }
-    })
-    return unsub
-  }, [status, onRefresh])
-
-  const startAuth = useCallback(async () => {
-    setStatus('waiting')
-    setUserCode(null)
-    try {
-      await window.aide.connections.authenticateMicrosoft()
-      setStatus('success')
-      await onRefresh()
-    } catch {
-      setStatus('error')
-    }
-  }, [onRefresh])
-
-  const copyCode = useCallback(() => {
-    if (userCode) {
-      navigator.clipboard.writeText(userCode)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
-  }, [userCode])
-
-  return (
-    <div className="text-center">
-      <div className="w-14 h-14 rounded-2xl bg-blue-500/10 flex items-center justify-center mx-auto mb-5">
-        <MicrosoftLogo size={26} />
-      </div>
-      <h2 className="text-[18px] font-bold text-text-primary mb-2">Connect Microsoft 365</h2>
-      <p className="text-[13px] text-text-secondary mb-6">
-        Let Aide see your email, calendar, and Teams messages so it knows what's on your plate.
-      </p>
-
-      {status === 'idle' && (
-        <div className="space-y-3">
-          <button
-            onClick={startAuth}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-white text-zinc-800 border border-edge text-[13px] font-medium rounded-xl hover:bg-surface-1 transition-colors"
-          >
-            <MicrosoftLogo size={16} /> Sign in with Microsoft
-          </button>
-          <p className="text-[11px] text-text-tertiary">
-            Your browser will open the Microsoft sign-in page
-          </p>
-        </div>
-      )}
-
-      {status === 'waiting' && (
-        <div className="space-y-4">
-          {userCode ? (
-            <>
-              <p className="text-[13px] text-text-secondary">Enter this code in your browser:</p>
-              <div className="flex items-center justify-center gap-3">
-                <code className="text-[24px] font-mono font-bold text-text-primary tracking-[0.15em] bg-surface-1 px-5 py-2.5 rounded-xl border border-edge">
-                  {userCode}
-                </code>
-                <button
-                  onClick={copyCode}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-surface-1 transition-colors"
-                  title="Copy"
-                >
-                  {copied ? <Check size={16} className="text-success" /> : <Copy size={16} />}
-                </button>
-              </div>
-              <p className="text-[11px] text-text-tertiary">
-                {copied ? '✓ Copied to clipboard' : 'The code was copied to your clipboard automatically'}
-              </p>
-            </>
+        <div className="flex items-center gap-2 shrink-0">
+          {connected ? (
+            <span className="inline-flex items-center gap-1 text-[12px] font-medium text-success">
+              {verified ? <Check size={15} /> : <Shield size={14} />}
+            </span>
+          ) : noCli ? null : phase === 'waiting' ? (
+            <span className="inline-flex items-center gap-1.5 text-[12px] text-text-tertiary">
+              <Loader2 size={13} className="animate-spin" />
+            </span>
           ) : (
-            <p className="text-[13px] text-text-tertiary">Starting authentication…</p>
+            <button
+              onClick={startAuth}
+              className="h-7 px-3 rounded-lg text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors bg-accent text-white hover:bg-accent/90"
+            >
+              {phase === 'error' ? 'Retry' : 'Connect'}
+            </button>
           )}
-          <div className="flex items-center justify-center gap-2 text-[12px] text-text-tertiary">
-            <Loader2 size={14} className="animate-spin" /> Waiting for authorization…
-          </div>
         </div>
-      )}
+      </div>
 
-      {status === 'success' && (
-        <div className="space-y-4">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-success/10 text-success rounded-xl text-[13px] font-medium">
-            <Check size={16} /> Microsoft 365 connected
+      {/* Device code */}
+      {phase === 'waiting' && userCode && (
+        <div className="mt-3 flex items-center justify-between gap-3 p-3 rounded-lg bg-surface-2 border border-edge anim-fade-up">
+          <div className="text-left">
+            <p className="text-[11px] text-text-tertiary mb-1">Enter this code in your browser:</p>
+            <code className="text-[18px] font-mono font-bold text-text-primary tracking-[0.12em]">{userCode}</code>
           </div>
-          <div>
-            <button
-              onClick={onNext}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-[13px] font-medium rounded-xl hover:bg-accent/90 transition-colors"
-            >
-              Continue <ArrowRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {status === 'partial' && (
-        <div className="space-y-4">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-warning/10 text-warning rounded-xl text-[13px] font-medium">
-            <Shield size={16} /> Signed in, verifying permissions
-          </div>
-          <p className="text-[12px] text-text-tertiary">Signed in to your Microsoft account, but Aide can't sync your data automatically yet. You can keep going and try again later in Settings.</p>
-          <div>
-            <button
-              onClick={onNext}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-[13px] font-medium rounded-xl hover:bg-accent/90 transition-colors"
-            >
-              Continue <ArrowRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {status === 'error' && (
-        <div className="space-y-3">
-          <p className="text-[12px] text-danger">Connection failed. Please try again.</p>
           <button
-            onClick={() => { setStatus('idle'); setUserCode(null) }}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-500 text-white text-[13px] font-medium rounded-xl hover:bg-blue-600 transition-colors"
+            onClick={copyCode}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-surface-1 transition-colors shrink-0"
+            title="Copy"
           >
-            Retry
+            {copied ? <Check size={15} className="text-success" /> : <Copy size={15} />}
           </button>
         </div>
       )}
 
-      {status !== 'success' && status !== 'partial' && (
-        <button onClick={onSkip} className="block mx-auto mt-5 text-[12px] text-text-tertiary hover:text-text-secondary transition-colors">
-          Skip for now
-        </button>
+      {/* Partial — signed in, permissions not verified */}
+      {connected && !verified && (
+        <p className="mt-3 text-[11px] text-text-tertiary">
+          Signed in, but Aide can't sync your data automatically yet. You can keep going and retry later in Settings.
+        </p>
+      )}
+
+      {/* Error */}
+      {phase === 'error' && !connected && (
+        <p className="mt-3 text-[11px] text-danger">Connection failed. Please try again.</p>
+      )}
+
+      {/* GitHub CLI missing */}
+      {noCli && !connected && (
+        <div className="mt-3 p-3 rounded-lg bg-surface-2 border border-edge text-left">
+          <p className="text-[12px] text-text-secondary leading-relaxed mb-2">
+            Aide connects to GitHub through the <code className="text-[11px] bg-surface-1 px-1 py-0.5 rounded">gh</code> command-line tool. Install it first:
+          </p>
+          <div className="space-y-1 text-[11px] text-text-secondary">
+            <p>• Windows: <code className="bg-surface-1 px-1 py-0.5 rounded text-[11px]">winget install GitHub.cli</code></p>
+            <p>• macOS: <code className="bg-surface-1 px-1 py-0.5 rounded text-[11px]">brew install gh</code></p>
+            <p>• Or visit <a href="https://cli.github.com" className="text-accent hover:underline" onClick={e => { e.preventDefault(); window.open('https://cli.github.com') }}>cli.github.com</a></p>
+          </div>
+          <p className="mt-2 text-[11px] text-text-tertiary">Restart Aide after installing to connect.</p>
+        </div>
       )}
     </div>
   )
 }
 
-// === Channels ===
+// === Channels (pick one you check most) ===
 
 function ChannelsStep({ onNext, onSkip }: { onNext: () => void; onSkip: () => void }) {
   return (
-    <div className="text-center">
+    <div className="text-center anim-fade-up">
       <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto mb-5">
         <Send size={26} className="text-accent" />
       </div>
       <h2 className="text-[18px] font-bold text-text-primary mb-2">Stay in the loop</h2>
       <p className="text-[13px] text-text-secondary mb-6">
-        Connect a channel to get briefings and send commands on the go.
+        Pick the one you check most — that's where Aide will reach you with briefings and take your commands.
       </p>
 
-      <div className="space-y-3 text-left">
-        {CHANNELS.map(channel => <ChannelCard key={channel.id} channel={channel} />)}
-      </div>
+      <ChannelPicker />
 
       <button
         onClick={onNext}
@@ -505,17 +393,17 @@ function ChannelsStep({ onNext, onSkip }: { onNext: () => void; onSkip: () => vo
 
 // === Done ===
 
-function DoneStep({ onFinish, allVerified }: { onFinish: () => void; allVerified: boolean }) {
+function DoneStep({ onFinish, anyVerified }: { onFinish: () => void; anyVerified: boolean }) {
   return (
-    <div className="text-center">
+    <div className="text-center anim-fade-up">
       <div className="w-16 h-16 rounded-2xl bg-success/10 flex items-center justify-center mx-auto mb-6">
         <Check size={32} className="text-success" />
       </div>
       <h2 className="text-[20px] font-bold text-text-primary mb-3">Setup complete</h2>
       <p className="text-[14px] text-text-secondary leading-relaxed mb-8">
-        {allVerified
-          ? 'Aide is ready. You can change connection settings anytime in Settings.'
-          : 'Basic setup is done. You can add or retry the remaining connections later in Settings.'}
+        {anyVerified
+          ? 'Aide is ready. You can change connections anytime in Settings.'
+          : 'Basic setup is done. You can add or retry connections later in Settings.'}
       </p>
       <button
         onClick={onFinish}

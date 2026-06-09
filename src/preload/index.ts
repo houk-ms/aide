@@ -69,6 +69,19 @@ const api: AideAPI = {
     get: () => ipcRenderer.invoke('preferences:get'),
     set: (prefs) => ipcRenderer.invoke('preferences:set', prefs)
   },
+  skills: {
+    list: () => ipcRenderer.invoke('skills:list'),
+    get: (id) => ipcRenderer.invoke('skills:get', id),
+    toggle: (id, enabled) => ipcRenderer.invoke('skills:toggle', id, enabled),
+    delete: (id) => ipcRenderer.invoke('skills:delete', id)
+  },
+  marketplace: {
+    listSources: () => ipcRenderer.invoke('marketplace:listSources'),
+    syncSource: (id) => ipcRenderer.invoke('marketplace:syncSource', id),
+    syncAll: () => ipcRenderer.invoke('marketplace:syncAll'),
+    browse: (sourceId?) => ipcRenderer.invoke('marketplace:browse', sourceId),
+    install: (sourceId, path) => ipcRenderer.invoke('marketplace:install', sourceId, path)
+  },
   wechat: {
     getStatus: () => ipcRenderer.invoke('wechat:getStatus'),
     connect: () => ipcRenderer.invoke('wechat:connect'),
@@ -104,6 +117,11 @@ const api: AideAPI = {
     check: () => ipcRenderer.invoke('updates:check'),
     download: () => ipcRenderer.invoke('updates:download'),
     install: () => ipcRenderer.invoke('updates:install')
+  },
+  files: {
+    open: (taskId, ref) => ipcRenderer.invoke('files:open', taskId, ref),
+    reveal: (taskId, ref) => ipcRenderer.invoke('files:reveal', taskId, ref),
+    exists: (taskId, ref) => ipcRenderer.invoke('files:exists', taskId, ref)
   },
   system: {
     health: () => ipcRenderer.invoke('system:health')

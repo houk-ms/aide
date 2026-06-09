@@ -7,7 +7,9 @@ import { listJobs, createJob, updateJob, deleteJob, toggleJob } from '../jobs'
 import { showSystemNotification } from '../index'
 import { isJobSession, jobCreatedTaskIds } from './state'
 import { getActiveMcpTools } from './mcp'
-import { browser, desktop, isBrowserAvailable, isDesktopAvailable } from '../automation'
+import { browser, isBrowserAvailable } from '../automation'
+import { listSkills, installSkillFromLocalPath } from '../skills'
+import { browseSkills, installFromMarketplace } from '../skills/sources'
 import { BrowserWindow } from 'electron'
 import type { Tool } from '@github/copilot-sdk'
 
@@ -45,8 +47,102 @@ export function buildTools(): Tool<any>[] {
     desktopTypeTool,
     desktopShortcutTool,
     desktopScreenshotTool,
+    // Skill marketplace tools
+    searchSkillsTool,
+    installSkillTool,
+    listInstalledSkillsTool,
     ...mcpTools
   ]
+}
+
+// ── Skill marketplace tools ──────────────────────────────────────────
+
+const searchSkillsTool: Tool<any> = {
+  name: 'search_skills',
+  description: 'Search the skill marketplace for installable skills by keyword. Returns matching skills with name, description, source, install path, a safety hint (risk), whether it needs extra setup (API keys / dependencies), and whether already installed. Use this when the user wants to find or discover a skill to install. To actually install one, pass its sourceId + path to install_skill.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Keyword matched against skill name/description/category. Pass an empty string to list everything (can be large).' },
+      limit: { type: 'number', description: 'Max results to return (default 20).' }
+    },
+    required: ['query']
+  },
+  skipPermission: true, // read-only browse is auto-allowed
+  handler: async (args: { query: string; limit?: number }) => {
+    const all = await browseSkills()
+    const q = (args.query || '').toLowerCase().trim()
+    const matched = q
+      ? all.filter(s =>
+          s.name.toLowerCase().includes(q) ||
+          s.description.toLowerCase().includes(q) ||
+          (s.category || '').toLowerCase().includes(q)
+        )
+      : all
+    const limit = args.limit && args.limit > 0 ? args.limit : 20
+    return {
+      total: matched.length,
+      returned: Math.min(matched.length, limit),
+      skills: matched.slice(0, limit).map(s => ({
+        name: s.name,
+        description: s.description,
+        category: s.category,
+        risk: s.risk,
+        setup: s.setup && s.setup.type !== 'none'
+          ? { required: true, steps: s.setup.summary }
+          : { required: false },
+        sourceId: s.sourceId,
+        sourceName: s.sourceName,
+        path: s.path,
+        installed: s.installed
+      }))
+    }
+  }
+}
+
+const installSkillTool: Tool<any> = {
+  name: 'install_skill',
+  description: 'Install a skill so the agent can use it. Two modes: (1) source="marketplace" — provide sourceId and path obtained from search_skills; (2) source="local" — provide localPath to a folder containing a SKILL.md on the user\'s machine. The skill is enabled immediately after install.',
+  parameters: {
+    type: 'object',
+    properties: {
+      source: { type: 'string', enum: ['marketplace', 'local'], description: 'Where to install from.' },
+      sourceId: { type: 'string', description: 'Marketplace source id (required when source=marketplace). Get it from search_skills.' },
+      path: { type: 'string', description: 'Repository path to the skill (required when source=marketplace). Get it from search_skills.' },
+      localPath: { type: 'string', description: 'Absolute path to a local skill folder or SKILL.md file (required when source=local).' }
+    },
+    required: ['source']
+  },
+  handler: async (args: { source: 'marketplace' | 'local'; sourceId?: string; path?: string; localPath?: string }) => {
+    try {
+      if (args.source === 'local') {
+        if (!args.localPath) return { success: false, error: 'localPath is required for a local install' }
+        const skill = installSkillFromLocalPath(args.localPath)
+        return { success: true, installed: skill.name, message: `Installed local skill "${skill.name}"` }
+      }
+      if (!args.sourceId || !args.path) {
+        return { success: false, error: 'sourceId and path are required for a marketplace install — get them from search_skills' }
+      }
+      const skill = await installFromMarketplace(args.sourceId, args.path)
+      return { success: true, installed: skill.name, message: `Installed "${skill.name}" from the marketplace` }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+}
+
+const listInstalledSkillsTool: Tool<any> = {
+  name: 'list_installed_skills',
+  description: 'List skills currently installed in Aide, with their enabled/disabled state and source. Use this to check what is already available before installing something new.',
+  parameters: { type: 'object', properties: {} },
+  skipPermission: true, // read-only
+  handler: async () => {
+    const skills = listSkills()
+    return {
+      total: skills.length,
+      skills: skills.map(s => ({ name: s.name, description: s.description, enabled: s.enabled, source: s.source }))
+    }
+  }
 }
 
 const memoryWriteTool: Tool<any> = {

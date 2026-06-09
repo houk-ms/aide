@@ -9,7 +9,7 @@ const points = [
   },
   {
     title: 'Reaches you anywhere',
-    body: 'Your briefing and daily report arrive in the app or on your phone. Pick where each job lands.',
+    body: 'Your briefing and daily report arrive in the app or on your phone — WeChat, Telegram, Discord, or WhatsApp. Pick where each job lands.',
   },
   {
     title: 'Takes commands remotely',

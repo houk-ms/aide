@@ -212,7 +212,6 @@ The Memory system must be inspectable, not a black box:
 
 - **Task** → a Task maintains its own working state; archived to L2 on completion; L1 entries can be tagged with an associated Task
 - **Project** → L1 entries can be tagged with an associated Project (used for retrieval filtering)
-- **Relation** → interpersonal knowledge lives in L1
 - **Connection** → not directly involved in Memory (it's on the tool side), but information obtained from a Connection can be written to L1
 - **Skill** → not involved in Memory (tool side)
 - **Job** → when generating daily/weekly reports, retrieves Task summaries within the time range from L2

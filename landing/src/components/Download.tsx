@@ -1,11 +1,5 @@
 import { useReveal } from '../useReveal'
-import { IconApple, IconWindows, IconLinux, IconArrow } from './icons'
-
-const platforms = [
-  { icon: <IconApple width={20} height={20} />, label: 'macOS', sub: 'Apple Silicon & Intel' },
-  { icon: <IconWindows width={18} height={18} />, label: 'Windows', sub: '10 & 11' },
-  { icon: <IconLinux width={20} height={20} />, label: 'Linux', sub: 'AppImage & .deb' },
-]
+import { IconArrow } from './icons'
 
 export function Download() {
   const { ref, shown } = useReveal<HTMLDivElement>()
@@ -54,21 +48,6 @@ export function Download() {
           Download for free
           <IconArrow width={18} height={18} className="transition-transform group-hover:translate-x-0.5" />
         </a>
-
-        <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
-          {platforms.map((p) => (
-            <div
-              key={p.label}
-              className="flex items-center gap-2.5 rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-left text-white backdrop-blur"
-            >
-              <span className="text-white/90">{p.icon}</span>
-              <div className="leading-tight">
-                <div className="text-[13.5px] font-semibold">{p.label}</div>
-                <div className="text-[11px] text-white/60">{p.sub}</div>
-              </div>
-            </div>
-          ))}
-        </div>
       </div>
     </section>
   )

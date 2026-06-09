@@ -8,6 +8,11 @@ export default defineConfig({
       alias: {
         '@shared': resolve('src/shared')
       }
+    },
+    build: {
+      rollupOptions: {
+        external: ['bufferutil', 'utf-8-validate']
+      }
     }
   },
   preload: {

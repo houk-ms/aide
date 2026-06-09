@@ -4,15 +4,15 @@
 
 # Aide
 
-### Your personal work agent — sees the full picture, learns as you work, and helps you get things done.
+### Your personal work agent
 
-[![Status](https://img.shields.io/badge/status-MVP%20in%20progress-f5a623)](#roadmap)
-[![Platform](https://img.shields.io/badge/platform-desktop-blue)](#tech-stack)
-[![Built with](https://img.shields.io/badge/built%20with-Electron%20%2B%20React-47848f)](#tech-stack)
-[![AI Engine](https://img.shields.io/badge/AI-GitHub%20Copilot%20SDK-6f42c1)](#tech-stack)
+**Sees the full picture · learns as you work · helps you get things done**
+
+[![Status](https://img.shields.io/badge/status-early%20access-3fb950)](#project-status)
+[![Built with](https://img.shields.io/badge/built%20with-Electron%20%C2%B7%20React%20%C2%B7%20Copilot%20SDK-2563eb)](#under-the-hood)
 [![License](https://img.shields.io/badge/license-private-lightgrey)](#license)
 
-**[🌐 Visit the product homepage](https://houk-ms.github.io/aide/)**
+[![Visit the Homepage](https://img.shields.io/badge/Visit%20the%20Homepage-2ea44f?style=for-the-badge)](https://houk-ms.github.io/aide/)
 
 </div>
 
@@ -22,26 +22,25 @@
 
 **Aide** is a local-first desktop agent for people who live inside a dozen work systems at once.
 
-Your work is scattered across email, Teams, GitHub, meetings, and work items — and no single place shows you the whole picture. Most AI tools forget everything the moment a chat ends, so you spend five minutes setting up context to get two minutes of help. And at the end of the day, there's no record of what you actually did.
+Your work is scattered across email, Teams, GitHub, meetings, and work items — and no single place shows you the whole picture. Most AI tools forget everything the moment a chat ends, so you spend five minutes setting up context for two minutes of help. And at day's end, there's no record of what you actually did.
 
-Aide closes that gap. It **aggregates** your tasks from every system, **builds a lasting understanding** of your projects and people, and **acts** on your behalf — drafting, replying, reviewing, and shipping — the way you would yourself. It runs proactively in the background and can reach you on WeChat, so the work keeps moving even when the app is closed.
+Aide closes that gap — it sees your work whole, remembers it, and acts on it the way you would.
 
 > One place to manage all your work. An agent that already knows your context, works while you're away, and reaches you wherever you are.
 
 ---
 
-## Why Aide is different
+## How Aide helps
 
-| | AI chat assistants | Autonomous agents | Task managers | Automation tools | **Aide** |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Persistent task lifecycle | ✗ | ~ | ✓ | ✗ | **✓** |
-| Learns you over time | ~ | ✓ | ✗ | ✗ | **✓** |
-| Runs proactively | ✗ | ✓ | ✗ | ✓ | **✓** |
-| Aggregates real work systems | ~ | ~ | ✗ | ✓ | **✓** |
-| Judgment, not just rules | ✓ | ✓ | ✗ | ✗ | **✓** |
-| Reaches you off the desktop | ✗ | ~ | ✗ | ~ | **✓** |
+Three things, working as one:
 
-Aide combines the **memory and judgment of an agent** with the **persistent task lifecycle of a task manager** and the **proactive execution of automation** — focused squarely on knowledge work, and reachable wherever you are.
+| | |
+|---|---|
+| **Aggregate** | Pulls your tasks from every system — email, Teams, GitHub, meetings — into one prioritized view. Nothing slips through, and you stop tab-hopping. |
+| **Understand** | Builds a lasting memory of your projects, people, and preferences. The more you work, the less you re-explain. |
+| **Act** | Drafts, replies, reviews, and ships — through each tool's API, and by driving a browser when there's no API. It always asks before anything leaves your hands. |
+
+It runs proactively in the background, reaches you across your messengers — WeChat, Telegram, Discord, WhatsApp — and keeps getting more capable as you install new Skills.
 
 ---
 
@@ -54,7 +53,23 @@ Aide combines the **memory and judgment of an agent** with the **persistent task
 | **10:00 AM** | A 30-minute Teams meeting ends. Aide pulls the action items from the notes, links them to the right project, and tags owners and deadlines — no manual capture. |
 | **2:00 PM** | Open a task ("fix the pagination bug"). Aide already knows the project, the code structure, and the related issue discussion. It locates the bug, proposes a fix and tests, and opens a PR. |
 | **3:00 PM** | "What did A conclude about that API change last week?" Aide answers straight from your email, Teams, and meeting history — no digging. |
-| **6:00 PM** | Aide reconciles the day: tasks you handled yourself, things resolved before a task even existed. It updates statuses, generates your daily report, and delivers it to wherever you asked — the app, WeChat, or both. |
+| **6:00 PM** | Aide reconciles the day: tasks you handled yourself, things resolved before a task even existed. It updates statuses, generates your daily report, and delivers it wherever you asked — the app, your messengers, or both. |
+
+---
+
+## Why Aide is different
+
+| | AI chat assistants | Autonomous agents | Task managers | Automation tools | **Aide** |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Persistent task lifecycle | ✗ | ~ | ✓ | ✗ | **✓** |
+| Learns you over time | ~ | ✓ | ✗ | ✗ | **✓** |
+| Runs proactively | ✗ | ✓ | ✗ | ✓ | **✓** |
+| Aggregates real work systems | ~ | ~ | ✗ | ✓ | **✓** |
+| Judgment, not just rules | ✓ | ✓ | ✗ | ✗ | **✓** |
+| Extends with new skills | ~ | ~ | ✗ | ✗ | **✓** |
+| Reaches you off the desktop | ✗ | ~ | ✗ | ~ | **✓** |
+
+Aide combines the **memory and judgment of an agent** with the **persistent task lifecycle of a task manager** and the **proactive execution of automation** — focused squarely on knowledge work, reachable wherever you are, and open-ended through installable skills.
 
 ---
 
@@ -64,9 +79,8 @@ Aide is built around a small set of entities, all maintainable two ways: **by th
 
 - **Task** — the central entity. Everything revolves around it. Sourced from connections, scheduled jobs, or conversation.
 - **Connection (Source)** — an external work system (Outlook, Teams, GitHub, Calendar, SharePoint…) that Aide reads work from and acts through.
-- **Channel** — how Aide reaches you outside the app: the built-in Aide chat and WeChat. Delivers briefings and reports, and takes commands remotely.
+- **Channel** — how Aide reaches you outside the app: the built-in Aide chat plus WeChat, Telegram, Discord, and WhatsApp. Delivers briefings and reports, and takes commands remotely.
 - **Project** — a work project (repo, docs, wiki) that gives the agent background when handling tasks.
-- **Relation** — your network of people, with roles and communication preferences, so the agent can judge priority and pick the right channel.
 - **Skill** — an extensible capability unit, peer to MCP tools. Lets Aide's abilities be installed, published, and composed instead of hard-coded.
 - **Job** — scheduled automation (morning aggregation, periodic polling, end-of-day reconciliation), with per-job control over which Channels receive its result.
 - **Memory** — the agent's growing understanding of you: preferences, decisions, project progress, and people. Viewable, correctable, and deletable.
@@ -78,11 +92,10 @@ flowchart LR
     U[You] -->|chat| A
     A -->|creates / updates| T[Task]
     A -. reads .-> P[Project]
-    A -. reads .-> R[Relation]
     A -. reads .-> M[Memory]
     A -. loads .-> S[Skill]
     A -->|acts via| C
-    A -->|delivers results| CH[Channels: Aide chat / WeChat]
+    A -->|delivers results| CH[Channels]
     CH -->|remote commands| A
     CH --> U
     T -->|distills into| M
@@ -90,45 +103,51 @@ flowchart LR
 
 ---
 
-## Architecture
+## Get started
 
-Aide is a single Electron app: a **main process** that hosts the agent, scheduler, connections, and storage, and a **renderer** that delivers the task-list + chat workspace.
+### Download
 
+The quickest way to try Aide — no toolchain required.
+
+1. Download the installer for your platform from the [Releases page](https://github.com/houk-ms/aide/releases).
+2. Run it and launch Aide.
+3. Connect your accounts from **Settings → Connections**.
+
+Aide reaches your work systems through two MCP servers:
+
+- **Microsoft 365** via [`@microsoft/workiq`](https://github.com/microsoft/work-iq) — Outlook, Teams, Calendar, SharePoint/OneDrive, and People in one server.
+- **GitHub** via the GitHub MCP Server — issues, PRs, repos, and notifications.
+
+See [docs/connection.md](docs/connection.md) for setup details, including the Work IQ flag and admin-consent notes.
+
+<details>
+<summary><b>Run from source</b></summary>
+
+<br>
+
+**Prerequisites:** Node.js 20+ and npm.
+
+```bash
+npm install      # install dependencies
+npm run dev      # run in development (hot reload)
+npm run build    # build for production
+npm run preview  # preview the production build
 ```
-┌──────────────────────────────────────────────┐
-│ Electron Main Process                         │
-│                                               │
-│  Agent (Copilot SDK)   Job Scheduler          │
-│  Connection Manager    Memory Store           │
-│  Task Store            SQLite DB               │
-│                                               │
-│  MCP Servers:                                 │
-│   • @microsoft/workiq  (full M365)            │
-│   • GitHub MCP Server                          │
-│   • User-installed MCP (from registry)        │
-│  Skills: built-in / community / local         │
-└──────────────────────┬───────────────────────┘
-                       │ typed IPC
-┌──────────────────────▼───────────────────────┐
-│ Electron Renderer Process                     │
-│   [Task List]  │  [Chat Panel]                │
-│   React + Zustand + Tailwind CSS              │
-└───────────────────────────────────────────────┘
-```
 
-**The memory system** uses a three-layer design — no ML dependencies, just SQLite FTS5 + structured tags:
-
-| Layer | Name | Role | Loading |
-|---|---|---|---|
-| **L0** | Identity | Core profile (1K char hard limit) | Injected into every system prompt |
-| **L1** | Knowledge | Long-term facts, conventions, lessons | Retrieved per turn (top-K) |
-| **L2** | Archive | Historical record of tasks and sessions | Retrieved on demand |
-
-See [docs/architecture.md](docs/architecture.md) and [docs/memory.md](docs/memory.md) for the full design.
+</details>
 
 ---
 
-## Tech stack
+## Under the hood
+
+Aide is a single local-first Electron app — your data stays on your machine. The main process hosts the agent, scheduler, connections, and storage; work systems connect through MCP servers, and capabilities extend through installable Skills. Memory is a three-layer design on local SQLite, no ML dependencies.
+
+<details>
+<summary><b>Architecture & tech stack</b></summary>
+
+<br>
+
+The **main process** hosts the agent (GitHub Copilot SDK), job scheduler, connections, and storage; the **renderer** delivers the task-list + chat workspace over typed IPC. Work systems connect through MCP servers (`@microsoft/workiq` for M365, the GitHub MCP Server, plus user-installed MCP), and capabilities extend through Skills (built-in / community / local). Memory is a three-layer design — L0 identity, L1 knowledge, L2 archive — on SQLite FTS5 with structured tags.
 
 | Decision | Choice | Why |
 |---|---|---|
@@ -139,44 +158,9 @@ See [docs/architecture.md](docs/architecture.md) and [docs/memory.md](docs/memor
 | Language | TypeScript everywhere | One language across Electron, Copilot SDK, and MCP |
 | UI | React 19 · Zustand · Tailwind CSS | Lightweight, fast to iterate |
 
----
+See [docs/architecture.md](docs/architecture.md) and [docs/memory.md](docs/memory.md) for the full design.
 
-## Getting started
-
-### Option 1: Download a release
-
-The quickest way to try Aide — no toolchain required.
-
-1. Go to the [Releases page](https://github.com/houk-ms/aide/releases) and download the installer for your platform.
-2. Run the installer and launch Aide.
-3. Connect your accounts from **Settings → Connections** (see below).
-
-### Option 2: Run from source
-
-> **Prerequisites:** Node.js 20+ and npm.
-
-```bash
-# Install dependencies
-npm install
-
-# Run in development (hot reload)
-npm run dev
-
-# Build for production
-npm run build
-
-# Preview the production build
-npm run preview
-```
-
-### Connecting your accounts
-
-Aide talks to your work systems through two MCP servers:
-
-- **Microsoft 365** via [`@microsoft/workiq`](https://github.com/microsoft/work-iq) — Outlook, Teams, Calendar, SharePoint/OneDrive, and People in a single server.
-- **GitHub** via the GitHub MCP Server — issues, PRs, repos, and notifications.
-
-Authorize them from **Settings → Connections**. See [docs/connection.md](docs/connection.md) for setup details, including the Work IQ experimental flag and admin-consent notes.
+</details>
 
 ---
 
@@ -191,31 +175,15 @@ Authorize them from **Settings → Connections**. See [docs/connection.md](docs/
 | [docs/task.md](docs/task.md) | Task entity, state machine, dedup, prioritization |
 | [docs/connection.md](docs/connection.md) | External connections (Work IQ + GitHub) |
 | [docs/project.md](docs/project.md) | Project context |
-| [docs/relation.md](docs/relation.md) | People and working relationships |
 | [docs/skill.md](docs/skill.md) | Skill extensibility model |
 | [docs/job.md](docs/job.md) | Scheduling subsystem |
 | [docs/ui.md](docs/ui.md) | UI design and interaction flows |
-| [docs/feature-list.md](docs/feature-list.md) | Feature inventory and implementation audit |
-
----
-
-## Roadmap
-
-The full scope defined in [PRODUCT.md](PRODUCT.md) is the MVP — the goal is to use Aide for real daily work. Beyond MVP:
-
-- **Permission system** — configurable autonomy by action type and source
-- **More channels** — Telegram / Slack alongside the WeChat channel that ships today
-- **Self-improvement** — the agent learns from feedback and maintains its own skills
-- **Proactive heartbeat** — periodic check-ins that surface things worth your attention
-- **Browser & system control** — Playwright/CDP automation, file and Office operations
-- **Screen understanding & computer use** — operate any GUI, even apps without an API
-- **Workflow orchestration** — compose multi-step actions into reusable workflows
 
 ---
 
 ## Project status
 
-Aide is an **MVP in active development**. The app shell, task list, chat, settings, SQLite schema, and core CRUD are in place; the agent-driven collection and execution paths are being hardened. See [docs/feature-list.md](docs/feature-list.md) for a candid, per-feature audit.
+Aide is in **early access**: the core experience is in place, while the agent-driven collection and execution paths continue to be hardened. See [PRODUCT.md](PRODUCT.md) for the full scope and what's next.
 
 ---
 

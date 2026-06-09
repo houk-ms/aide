@@ -66,7 +66,7 @@ Job Scheduler (cron)
 User input (Renderer)
   → IPC → Main Process
   → Agent (Copilot SDK session)
-    → load context (Memory L0 + L1 retrieval + Task + Project + Relation)
+    → load context (Memory L0 + L1 retrieval + Task + Project)
     → SDK reasoning loop
     → call Custom Tools (store_memory, create_task, send_email, ...)
     → return result
@@ -83,7 +83,6 @@ User input (Renderer)
 | `memory_entries` | id, layer, content, source, status, tags, project_id, created_at | Memory (unified L0/L1/L2 table) |
 | `memory_fts` | (FTS5 virtual table) | Full-text search over memory |
 | `projects` | id, name, repo_path, docs_path, description | Projects |
-| `relations` | id, name, role, org, preferences | Working relationships |
 | `jobs` | id, name, cron, instruction, enabled, delivery_targets, last_run, last_result | Scheduled jobs (`delivery_targets` = JSON array of Channels to push the result to) |
 
 ### Filesystem
@@ -100,8 +99,8 @@ User input (Renderer)
 
 Aide's capabilities can be continuously extended rather than hard-coded. Two peer extension points:
 
-- **Skill**: a `SKILL.md` package placed in `~/.aide/skills/`, auto-loaded via the SDK's `SessionConfig.skillDirectories`, and injected into context once matched by description.
-- **MCP Server**: an external tool provider that can be searched and one-click installed from `registry.modelcontextprotocol.io`, with its config injected into the session.
+- **Skill**: a `SKILL.md` package placed in `~/.aide/skills/`, auto-loaded via the SDK's `SessionConfig.skillDirectories`, and injected into context once matched by description. Installed from the in-app community marketplace or a local folder.
+- **MCP Server**: an external tool provider whose config is injected into the session. WorkIQ and GitHub ship today; one-click install from `registry.modelcontextprotocol.io` is planned.
 
 See docs/skill.md for details.
 
@@ -120,7 +119,6 @@ interface AideAPI {
   jobs: { list, toggle, getLastSummary, ... }
   connections: { getStatus, authenticate, ... }
   projects: { list, get, update, ... }
-  relations: { list, get, update, ... }
   wechat: { getStatus, connect, disconnect, ... }   // WeChat channel
 }
 ```

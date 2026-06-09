@@ -3,7 +3,7 @@ import type { Project, Relation, Job, ConnectionStatus, UserPreferences } from '
 
 interface SettingsStore {
   isOpen: boolean
-  activeTab: 'connections' | 'projects' | 'relations' | 'jobs' | 'memory' | 'preferences'
+  activeTab: 'connections' | 'projects' | 'relations' | 'jobs' | 'memory' | 'skills' | 'preferences'
   projects: Project[]
   relations: Relation[]
   jobs: Job[]

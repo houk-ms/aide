@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { SlidersHorizontal, Check, Clock, X, ChevronDown, ChevronUp, Zap } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useChatStore, keyOf } from '../stores/chatStore'
 import type { Task } from '@shared/types'
 
 export function TaskPanel() {
@@ -145,6 +146,9 @@ function SidebarTaskItem({ task, selected, onSelect, isNew, hasActivity }: {
 }) {
   const { completeTask, snooze } = useTaskStore()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  // "Working" = this task has a turn in flight right now. Drives the dot's
+  // motion: working pulses, plain-unread stays static.
+  const isWorking = useChatStore(s => s.streamingBySession[keyOf(task.id)] ?? false)
 
   const priorityStyles = { p0: 'bg-[oklch(0.35_0.05_270)] text-white', p1: 'bg-[oklch(0.93_0.03_255)] text-[oklch(0.42_0.08_255)]', p2: 'bg-[oklch(0.95_0_0)] text-[oklch(0.55_0_0)]' }[task.priority] || 'bg-[oklch(0.95_0_0)] text-[oklch(0.55_0_0)]'
 
@@ -165,13 +169,16 @@ function SidebarTaskItem({ task, selected, onSelect, isNew, hasActivity }: {
           selected ? 'text-text-primary font-medium' : 'text-text-secondary'
         }`}>{task.title}</span>
 
-        {isNew && (
-          <div className="w-[5px] h-[5px] rounded-full bg-accent shrink-0 anim-pulse-dot" />
-        )}
-
-        {!isNew && hasActivity && (
-          <span className="w-[5px] h-[5px] rounded-full bg-accent shrink-0 group-hover:opacity-0 transition-opacity anim-pulse-dot" title="New activity" />
-        )}
+        {isWorking ? (
+          // Actively working: pulsing dot signals live motion.
+          <div className="w-[5px] h-[5px] rounded-full bg-accent shrink-0 anim-pulse-dot" title="Working…" />
+        ) : isNew ? (
+          // Unread (new task): static dot.
+          <div className="w-[5px] h-[5px] rounded-full bg-accent shrink-0" title="New" />
+        ) : hasActivity ? (
+          // Unread activity: static dot, hidden on hover to reveal row actions.
+          <span className="w-[5px] h-[5px] rounded-full bg-accent shrink-0 group-hover:opacity-0 transition-opacity" title="New activity" />
+        ) : null}
 
         {!isNew && (
           <div className={`absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center rounded-md pl-3 pr-0.5 opacity-0 group-hover:opacity-100 transition-opacity ${

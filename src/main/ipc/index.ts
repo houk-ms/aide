@@ -13,7 +13,10 @@ import { getWhatsAppStatus, connectWhatsApp, disconnectWhatsApp, pushToWhatsApp 
 import { getTelegramStatus, connectTelegram, disconnectTelegram, pushToTelegram } from '../telegram'
 import { getDiscordStatus, connectDiscord, disconnectDiscord, pushToDiscord } from '../discord'
 import { listChannels, deliverTo } from '../channels'
+import { listSkills, getSkill, toggleSkill, deleteSkill } from '../skills'
+import { listSources, syncSource, syncAllSources, browseSkills, installFromMarketplace } from '../skills/sources'
 import { getUpdateState, checkForUpdates, downloadUpdate, quitAndInstall } from '../updater'
+import { openArtifact, revealArtifact, artifactExists } from '../files'
 import { sdkHealth, sdkError } from '../health'
 
 export function registerIpcHandlers(): void {
@@ -97,6 +100,19 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('preferences:get', () => getPreferences())
   ipcMain.handle('preferences:set', (_, prefs) => setPreferences(prefs))
 
+  // === Skills ===
+  ipcMain.handle('skills:list', () => listSkills())
+  ipcMain.handle('skills:get', (_, id) => getSkill(id))
+  ipcMain.handle('skills:toggle', (_, id, enabled) => toggleSkill(id, enabled))
+  ipcMain.handle('skills:delete', (_, id) => deleteSkill(id))
+
+  // === Marketplace ===
+  ipcMain.handle('marketplace:listSources', () => listSources())
+  ipcMain.handle('marketplace:syncSource', (_, id) => syncSource(id))
+  ipcMain.handle('marketplace:syncAll', () => syncAllSources())
+  ipcMain.handle('marketplace:browse', (_, sourceId) => browseSkills(sourceId))
+  ipcMain.handle('marketplace:install', (_, sourceId, path) => installFromMarketplace(sourceId, path))
+
   // === WeChat ===
   ipcMain.handle('wechat:getStatus', () => getWeChatStatus())
   ipcMain.handle('wechat:connect', () => connectWeChat())
@@ -132,6 +148,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('updates:check', () => checkForUpdates())
   ipcMain.handle('updates:download', () => downloadUpdate())
   ipcMain.handle('updates:install', () => quitAndInstall())
+
+  // === Files (agent artifacts) ===
+  ipcMain.handle('files:open', (_, taskId, ref) => openArtifact(taskId, ref))
+  ipcMain.handle('files:reveal', (_, taskId, ref) => revealArtifact(taskId, ref))
+  ipcMain.handle('files:exists', (_, taskId, ref) => artifactExists(taskId, ref))
 
   // === System health ===
   ipcMain.handle('system:health', () => ({ sdk: sdkHealth, sdkError }))

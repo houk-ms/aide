@@ -25,12 +25,11 @@ export function Hero() {
         </h1>
 
         <p
-          className={`reveal ${shown ? 'in' : ''} mx-auto mt-6 max-w-xl text-balance text-[16.5px] leading-relaxed text-ink-500 sm:text-[18px]`}
+          className={`reveal ${shown ? 'in' : ''} mx-auto mt-6 max-w-2xl text-balance text-[16.5px] font-medium leading-relaxed text-ink-600 sm:text-[18.5px]`}
           style={{ transitionDelay: '120ms' }}
         >
-          Aide draws your scattered work — inbox, chats, repos — into one living
-          picture, and learns how you work, so it can act on your behalf. It keeps
-          moving while you're away and reaches you wherever you are.
+          Sees the full picture · learns as you work · helps you get things done —
+          even while you're away, and wherever you are.
         </p>
 
         <div
@@ -55,13 +54,6 @@ export function Hero() {
             See it in action
           </a>
         </div>
-
-        <p
-          className={`reveal ${shown ? 'in' : ''} mt-4 text-[12.5px] text-ink-400`}
-          style={{ transitionDelay: '220ms' }}
-        >
-          Free during early access · macOS · Windows · Linux
-        </p>
       </div>
 
       {/* Product visual */}

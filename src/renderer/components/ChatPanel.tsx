@@ -1,11 +1,94 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
+import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity } from 'lucide-react'
+import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, FolderOpen } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
-import { useChatStore } from '../stores/chatStore'
+import { useChatStore, GENERAL_KEY } from '../stores/chatStore'
 import type { LiveStep } from '../stores/chatStore'
 import type { ChatMessage, PendingAction, ModelInfo, TaskActivity, TurnStep } from '@shared/types'
+
+// Stable empty reference so the per-session live selector doesn't return a new
+// array each render (which would thrash zustand's equality check).
+const EMPTY_STEPS: LiveStep[] = []
+
+// Agent-created files are referenced in chat as inline code, e.g.
+// `session-state/.../files/Report.md` or a bare `Report.md`. We turn those into
+// clickable chips. Detection is deliberately high-precision: either the text
+// names the artifacts folder, or it's a single token with a known document
+// extension. The chip itself confirms the file actually exists before becoming
+// interactive (see FileChip), so a stray code reference never shows a dead link.
+const ARTIFACT_EXT = /\.(md|markdown|txt|csv|tsv|json|ya?ml|pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|svg|html?|zip|log)$/i
+
+function isArtifactCandidate(text: string): boolean {
+  const t = text.trim()
+  if (!t || /\n/.test(t)) return false
+  if (/(^|[\\/])files[\\/]/.test(t) || /session-state/.test(t)) return true
+  // Bare filename with a document-ish extension and no spaces.
+  return !/\s/.test(t) && ARTIFACT_EXT.test(t)
+}
+
+// A clickable reference to an agent-created file. Resolves against the session's
+// artifact sandbox; only renders interactive controls once existence is
+// confirmed, otherwise falls back to plain inline code.
+function FileChip({ taskId, refPath }: { taskId: string | null; refPath: string }) {
+  const name = refPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || refPath
+  const [exists, setExists] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    window.aide.files.exists(taskId, refPath).then(ok => { if (alive) setExists(ok) }).catch(() => {})
+    return () => { alive = false }
+  }, [taskId, refPath])
+
+  if (!exists) {
+    return <code className="px-1 py-0.5 rounded bg-surface-2 text-[12px] text-text-secondary break-all">{refPath}</code>
+  }
+
+  return (
+    <span className="inline-flex items-center gap-0.5 align-middle max-w-full">
+      <button
+        onClick={() => window.aide.files.open(taskId, refPath)}
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-surface-2 hover:bg-accent-muted text-accent text-[12px] font-medium transition-colors max-w-full"
+        title={`Open ${name}`}
+      >
+        <FileText size={12} className="shrink-0" />
+        <span className="truncate max-w-[220px]">{name}</span>
+      </button>
+      <button
+        onClick={() => window.aide.files.reveal(taskId, refPath)}
+        className="inline-flex items-center justify-center w-5 h-5 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+        title="Reveal in folder"
+      >
+        <FolderOpen size={11} />
+      </button>
+    </span>
+  )
+}
+
+// Markdown component overrides bound to a session, so inline file references
+// resolve against the right artifact sandbox. Cached per session: ReactMarkdown
+// re-parses whenever the `components` prop identity changes, so handing it a new
+// object on every keystroke would re-render all message markdown (visible fl
+// flicker). The cache keeps the reference stable.
+const mdComponentsCache = new Map<string, Components>()
+function makeMarkdownComponents(taskId: string | null): Components {
+  const key = taskId ?? '__general__'
+  const cached = mdComponentsCache.get(key)
+  if (cached) return cached
+  const components: Components = {
+    code({ className, children, ...props }) {
+      const text = String(children ?? '')
+      const isBlock = (className || '').includes('language-') || text.includes('\n')
+      if (!isBlock && isArtifactCandidate(text)) {
+        return <FileChip taskId={taskId} refPath={text.trim()} />
+      }
+      return <code className={className} {...props}>{children}</code>
+    }
+  }
+  mdComponentsCache.set(key, components)
+  return components
+}
 
 interface Attachment {
   id: string
@@ -20,7 +103,14 @@ export function ChatPanel() {
   const tasks = useTaskStore(s => s.tasks)
   const selectTask = useTaskStore(s => s.selectTask)
   const goHome = useTaskStore(s => s.goHome)
-  const { messages, liveSteps, isStreaming, fetchHistory, sendMessage, stopStream, modifyDraft, setModifyDraft } = useChatStore()
+  const { messages, fetchHistory, sendMessage, stopStream, modifyDraft, setModifyDraft } = useChatStore()
+  // Live turn state is per-session, so an in-flight turn in another conversation
+  // keeps streaming in the background and this view always reflects the session
+  // currently open — switching never looks interrupted.
+  const sessionKey = selectedTaskId ?? GENERAL_KEY
+  const liveSteps = useChatStore(s => s.liveStepsBySession[sessionKey] ?? EMPTY_STEPS)
+  const isStreaming = useChatStore(s => s.streamingBySession[sessionKey] ?? false)
+  const loadedSessionKey = useChatStore(s => s.loadedSessionKey)
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelInfo[]>([])
   const [selectedModel, setSelectedModel] = useState('')
@@ -47,15 +137,28 @@ export function ChatPanel() {
     const el = scrollContainerRef.current
     if (!el) return
     if (justSwitchedRef.current) {
+      // Don't consume the jump until the freshly-loaded history for THIS session
+      // has actually landed. fetchHistory is async, so right after a switch the
+      // view may still be showing the previous session's messages — jumping then
+      // would land on stale content and leave the new history scrolled up.
+      if (loadedSessionKey !== sessionKey) return
       justSwitchedRef.current = false
-      messagesEndRef.current?.scrollIntoView()
+      // Pin to the absolute bottom. Do it now (post-commit) and again over the
+      // next frames, since markdown/code/images can grow content height after
+      // first paint and async panels (task activity) expand a tick later.
+      const pin = () => { el.scrollTop = el.scrollHeight }
+      pin()
+      requestAnimationFrame(pin)
+      requestAnimationFrame(() => requestAnimationFrame(pin))
+      setTimeout(pin, 60)
+      setTimeout(pin, 160)
       return
     }
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160
     if (nearBottom) {
       messagesEndRef.current?.scrollIntoView({ behavior: isStreaming ? 'auto' : 'smooth' })
     }
-  }, [messages, liveSteps, isStreaming])
+  }, [messages, liveSteps, isStreaming, selectedTaskId, loadedSessionKey])
   useEffect(() => { inputRef.current?.focus() }, [selectedTaskId])
 
   useEffect(() => {
@@ -171,7 +274,7 @@ export function ChatPanel() {
               <AgentAvatar />
               <div className="flex-1 min-w-0 pt-0.5">
                 {liveSteps.length > 0 ? (
-                  <Timeline steps={liveStepsToTimeline(liveSteps)} live={isStreaming} />
+                  <Timeline steps={liveStepsToTimeline(liveSteps)} live={isStreaming} taskId={selectedTaskId} cap />
                 ) : (
                   <TypingIndicator />
                 )}
@@ -323,7 +426,7 @@ export function ChatPanel() {
               {/* Send / Stop button */}
               {isStreaming ? (
                 <button
-                  onClick={stopStream}
+                  onClick={() => stopStream(selectedTaskId)}
                   className="w-8 h-8 rounded-lg flex items-center justify-center bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-all shrink-0"
                   title="Stop generating"
                 >
@@ -491,7 +594,7 @@ function formatActivityTime(iso: string): string {
 
 /* === Message Bubble === */
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubbleInner({ message }: { message: ChatMessage }) {
   const confirmAction = useChatStore(s => s.confirmAction)
   const [copied, setCopied] = useState(false)
   const isUser = message.role === 'user'
@@ -508,7 +611,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
       <div className={`max-w-[85%] min-w-0 ${isUser ? 'ml-auto' : ''}`}>
         {!isUser && message.process && message.process.length > 0 && (
-          <ProcessTrail steps={message.process} />
+          <ProcessTrail steps={message.process} taskId={message.taskId} />
         )}
         {message.content && (
           <div className={`relative text-[14px] leading-[1.7] ${
@@ -520,7 +623,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               <div className="whitespace-pre-wrap break-words select-text">{message.content}</div>
             ) : (
               <div className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 select-text">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={makeMarkdownComponents(message.taskId)}>{message.content}</ReactMarkdown>
               </div>
             )}
           </div>
@@ -554,6 +657,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     </div>
   )
 }
+
+// Memoized: keystrokes in the composer update ChatPanel state, which would
+// otherwise re-render every bubble (each running ReactMarkdown). Message
+// objects are stable references from the store, so memo skips all of them.
+const MessageBubble = React.memo(MessageBubbleInner)
 
 /* === Action Card === */
 
@@ -784,28 +892,119 @@ function ToolStepRow({ step }: { step: Extract<TimelineStep, { kind: 'tool' }> }
   )
 }
 
-// The interleaved narration + tool timeline. Deliberately muted: this is the
-// "work" trail, kept visually secondary so the final answer stands out. `live`
-// adds a faint accent rail while the turn is still running.
-function Timeline({ steps, live }: { steps: TimelineStep[]; live?: boolean }) {
+// One rendered timeline row: narration, a single tool call, or a collapsed run
+// of consecutive same-tool calls (e.g. 12 web fetches → one "Web fetch ×12" row).
+type RenderItem =
+  | { kind: 'text'; content: string }
+  | { kind: 'tool'; step: Extract<TimelineStep, { kind: 'tool' }> }
+  | { kind: 'toolGroup'; toolName: string; count: number; running: number; errors: number; totalMs: number }
+
+// Collapse consecutive tool steps that share a tool name into a single grouped
+// row. Keeps the trail compact when an agent fans out the same tool many times,
+// while leaving narration and lone tool calls untouched.
+function coalesceTimeline(steps: TimelineStep[]): RenderItem[] {
+  const out: RenderItem[] = []
+  let i = 0
+  while (i < steps.length) {
+    const s = steps[i]
+    if (s.kind === 'text') {
+      out.push({ kind: 'text', content: s.content })
+      i++
+      continue
+    }
+    const name = s.toolName
+    const run: Extract<TimelineStep, { kind: 'tool' }>[] = []
+    while (i < steps.length) {
+      const t = steps[i]
+      if (t.kind !== 'tool' || t.toolName !== name) break
+      run.push(t)
+      i++
+    }
+    if (run.length === 1) {
+      out.push({ kind: 'tool', step: run[0] })
+    } else {
+      out.push({
+        kind: 'toolGroup',
+        toolName: name,
+        count: run.length,
+        running: run.filter(r => r.status === 'running').length,
+        errors: run.filter(r => r.status === 'error').length,
+        totalMs: run.reduce((a, r) => a + (r.durationMs || 0), 0)
+      })
+    }
+  }
+  return out
+}
+
+function ToolGroupRow({ item }: { item: Extract<RenderItem, { kind: 'toolGroup' }> }) {
+  const status = item.running > 0 ? 'running' : item.errors > 0 ? 'error' : 'done'
   return (
-    <div className={`ml-0.5 border-l pl-2.5 space-y-1.5 ${live ? 'border-accent/20' : 'border-edge-subtle'}`}>
-      {steps.map((s, i) =>
-        s.kind === 'text' ? (
-          <div key={i} className="text-[12px] leading-[1.55] text-text-tertiary/85 prose prose-sm max-w-none [&_*]:!text-text-tertiary/85 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.content}</ReactMarkdown>
-          </div>
+    <div className="text-[10.5px] text-text-tertiary/80">
+      <div className="flex items-center gap-1.5">
+        {status === 'running' ? (
+          <Loader2 size={9} className="animate-spin shrink-0 text-accent/70" />
+        ) : status === 'error' ? (
+          <X size={9} className="text-danger/70 shrink-0" />
         ) : (
-          <ToolStepRow key={i} step={s} />
-        )
-      )}
+          <Check size={9} className="text-text-tertiary/60 shrink-0" />
+        )}
+        <span className="truncate text-text-tertiary">{getToolLabel(item.toolName)}</span>
+        <span className="shrink-0 px-1 rounded bg-surface-2 text-text-tertiary/70 tabular-nums">×{item.count}</span>
+        {item.running > 0 && (
+          <span className="shrink-0 text-text-tertiary">{item.running} running</span>
+        )}
+        {item.errors > 0 && (
+          <span className="shrink-0 text-danger/70">{item.errors} failed</span>
+        )}
+        {item.totalMs > 0 && (
+          <span className="shrink-0 tabular-nums text-text-tertiary/50">{formatDuration(item.totalMs)}</span>
+        )}
+      </div>
     </div>
   )
 }
 
+// The interleaved narration + tool timeline. Deliberately muted: this is the
+// "work" trail, kept visually secondary so the final answer stands out. `live`
+// adds a faint accent rail while the turn is still running. `cap` bounds the
+// height and scrolls internally (the live view), so a long turn never pushes the
+// whole page down — it auto-follows the newest row instead.
+function Timeline({ steps, live, taskId, cap }: { steps: TimelineStep[]; live?: boolean; taskId: string | null; cap?: boolean }) {
+  const items = useMemo(() => coalesceTimeline(steps), [steps])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (cap && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  }, [items, cap])
+
+  const body = (
+    <div className={`ml-0.5 border-l pl-2.5 space-y-1.5 ${live ? 'border-accent/20' : 'border-edge-subtle'}`}>
+      {items.map((it, i) =>
+        it.kind === 'text' ? (
+          <div key={i} className="text-[12px] leading-[1.55] text-text-tertiary/85 prose prose-sm max-w-none [&_*]:!text-text-tertiary/85 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={makeMarkdownComponents(taskId)}>{it.content}</ReactMarkdown>
+          </div>
+        ) : it.kind === 'toolGroup' ? (
+          <ToolGroupRow key={i} item={it} />
+        ) : (
+          <ToolStepRow key={i} step={it.step} />
+        )
+      )}
+    </div>
+  )
+
+  if (cap) {
+    return (
+      <div ref={scrollRef} className="max-h-[260px] overflow-y-auto scrollbar-thin pr-1">
+        {body}
+      </div>
+    )
+  }
+  return body
+}
+
 /* === Process Trail (folded "work" timeline on a finished reply) === */
 
-function ProcessTrail({ steps }: { steps: TurnStep[] }) {
+function ProcessTrail({ steps, taskId }: { steps: TurnStep[]; taskId: string | null }) {
   const [open, setOpen] = useState(false)
   const toolCount = steps.reduce((n, s) => (s.kind === 'tool' ? n + 1 : n), 0)
   const summary = toolCount > 0
@@ -823,7 +1022,7 @@ function ProcessTrail({ steps }: { steps: TurnStep[] }) {
         <ChevronRight size={10} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
       </button>
 
-      {open && <div className="mt-1"><Timeline steps={steps as TimelineStep[]} /></div>}
+      {open && <div className="mt-1"><Timeline steps={steps as TimelineStep[]} taskId={taskId} cap /></div>}
     </div>
   )
 }
