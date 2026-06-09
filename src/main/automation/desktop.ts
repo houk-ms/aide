@@ -6,21 +6,80 @@ import fs from 'fs'
 // Use Node's createRequire to bypass vite's bundler
 // nut.js has native bindings that don't work with vite's commonjs plugin
 const require = createRequire(import.meta.url)
-const nutjs = require('@nut-tree-fork/nut-js') as typeof import('@nut-tree-fork/nut-js')
-const { mouse, keyboard, screen, Point, Button, Key } = nutjs
 
 // ============================================================
 // Desktop Automation Module — nut.js-based desktop control
 // ============================================================
 
-// Configure nut.js defaults
-mouse.config.autoDelayMs = 100
-keyboard.config.autoDelayMs = 50
+// Type definitions for nut.js (runtime-loaded native module)
+interface NutJsModule {
+  mouse: {
+    config: { autoDelayMs: number }
+    move: (points: Array<{ x: number; y: number }>) => Promise<void>
+    click: (button: unknown) => Promise<void>
+    doubleClick: (button: unknown) => Promise<void>
+    pressButton: (button: unknown) => Promise<void>
+    releaseButton: (button: unknown) => Promise<void>
+    scrollDown: (amount: number) => Promise<void>
+    getPosition: () => Promise<{ x: number; y: number }>
+  }
+  keyboard: {
+    config: { autoDelayMs: number }
+    type: (text: string) => Promise<void>
+    pressKey: (key: unknown) => Promise<void>
+    releaseKey: (key: unknown) => Promise<void>
+  }
+  screen: {
+    grab: () => Promise<{ data: Buffer; width: number; height: number }>
+    width: () => Promise<number>
+    height: () => Promise<number>
+  }
+  Point: new (x: number, y: number) => { x: number; y: number }
+  Button: { LEFT: unknown; RIGHT: unknown }
+  Key: Record<string, unknown>
+}
+
+// Lazy-load nut.js to handle native binding failures gracefully
+let nutjs: NutJsModule | null = null
+let loadError: Error | null = null
+
+function getNutJs(): NutJsModule {
+  if (loadError) {
+    throw loadError
+  }
+  if (!nutjs) {
+    try {
+      nutjs = require('@nut-tree-fork/nut-js') as NutJsModule
+      // Configure nut.js defaults
+      nutjs.mouse.config.autoDelayMs = 100
+      nutjs.keyboard.config.autoDelayMs = 50
+    } catch (err) {
+      loadError = err as Error
+      console.error('[Desktop] Failed to load nut.js:', err)
+      throw err
+    }
+  }
+  return nutjs
+}
+
+/**
+ * Check if desktop automation is available
+ */
+export function isDesktopAvailable(): boolean {
+  try {
+    getNutJs()
+    // In headless CI environments, this would fail
+    return process.env.DISPLAY !== undefined || process.platform === 'win32' || process.platform === 'darwin'
+  } catch {
+    return false
+  }
+}
 
 /**
  * Move mouse to absolute screen coordinates
  */
 export async function moveMouse(x: number, y: number): Promise<void> {
+  const { mouse, Point } = getNutJs()
   await mouse.move([new Point(x, y)])
 }
 
@@ -28,6 +87,7 @@ export async function moveMouse(x: number, y: number): Promise<void> {
  * Click at current mouse position or specified coordinates
  */
 export async function click(x?: number, y?: number, button: 'left' | 'right' = 'left'): Promise<void> {
+  const { mouse, Button, Point } = getNutJs()
   if (x !== undefined && y !== undefined) {
     await mouse.move([new Point(x, y)])
   }
@@ -39,6 +99,7 @@ export async function click(x?: number, y?: number, button: 'left' | 'right' = '
  * Double-click at current position or specified coordinates
  */
 export async function doubleClick(x?: number, y?: number): Promise<void> {
+  const { mouse, Button, Point } = getNutJs()
   if (x !== undefined && y !== undefined) {
     await mouse.move([new Point(x, y)])
   }
@@ -56,6 +117,7 @@ export async function rightClick(x?: number, y?: number): Promise<void> {
  * Drag from one point to another
  */
 export async function drag(fromX: number, fromY: number, toX: number, toY: number): Promise<void> {
+  const { mouse, Button, Point } = getNutJs()
   await mouse.move([new Point(fromX, fromY)])
   await mouse.pressButton(Button.LEFT)
   await mouse.move([new Point(toX, toY)])
@@ -66,6 +128,7 @@ export async function drag(fromX: number, fromY: number, toX: number, toY: numbe
  * Scroll the mouse wheel
  */
 export async function scroll(amount: number, direction: 'up' | 'down' = 'down'): Promise<void> {
+  const { mouse } = getNutJs()
   const scrollAmount = direction === 'up' ? -amount : amount
   await mouse.scrollDown(scrollAmount)
 }
@@ -74,6 +137,7 @@ export async function scroll(amount: number, direction: 'up' | 'down' = 'down'):
  * Type text using keyboard
  */
 export async function typeText(text: string): Promise<void> {
+  const { keyboard } = getNutJs()
   await keyboard.type(text)
 }
 
@@ -81,7 +145,8 @@ export async function typeText(text: string): Promise<void> {
  * Press a single key
  */
 export async function pressKey(key: string): Promise<void> {
-  const keyMap: Record<string, Key> = {
+  const { keyboard, Key } = getNutJs()
+  const keyMap: Record<string, typeof Key[keyof typeof Key]> = {
     'enter': Key.Enter,
     'return': Key.Enter,
     'tab': Key.Tab,
@@ -126,11 +191,13 @@ export async function pressKey(key: string): Promise<void> {
  * Press a keyboard shortcut (e.g., Ctrl+C, Cmd+V)
  */
 export async function pressShortcut(shortcut: string): Promise<void> {
+  const { keyboard, Key } = getNutJs()
+  type KeyType = typeof Key[keyof typeof Key]
   const parts = shortcut.toLowerCase().split('+').map(p => p.trim())
-  const modifiers: Key[] = []
-  let mainKey: Key | null = null
+  const modifiers: KeyType[] = []
+  let mainKey: KeyType | null = null
 
-  const modifierMap: Record<string, Key> = {
+  const modifierMap: Record<string, KeyType> = {
     'ctrl': Key.LeftControl,
     'control': Key.LeftControl,
     'alt': Key.LeftAlt,
@@ -141,7 +208,7 @@ export async function pressShortcut(shortcut: string): Promise<void> {
     'win': Key.LeftSuper
   }
 
-  const keyMap: Record<string, Key> = {
+  const keyMap: Record<string, KeyType> = {
     'a': Key.A, 'b': Key.B, 'c': Key.C, 'd': Key.D, 'e': Key.E,
     'f': Key.F, 'g': Key.G, 'h': Key.H, 'i': Key.I, 'j': Key.J,
     'k': Key.K, 'l': Key.L, 'm': Key.M, 'n': Key.N, 'o': Key.O,
@@ -192,6 +259,7 @@ export async function pressShortcut(shortcut: string): Promise<void> {
  * Returns the file path to the saved screenshot.
  */
 export async function takeScreenshot(): Promise<string> {
+  const { screen } = getNutJs()
   const image = await screen.grab()
   const { data, width, height } = image
 
@@ -280,6 +348,7 @@ function crc32Compute(buf: Buffer): number {
  * Get screen dimensions
  */
 export async function getScreenSize(): Promise<{ width: number; height: number }> {
+  const { screen } = getNutJs()
   const width = await screen.width()
   const height = await screen.height()
   return { width, height }
@@ -289,6 +358,7 @@ export async function getScreenSize(): Promise<{ width: number; height: number }
  * Get current mouse position
  */
 export async function getMousePosition(): Promise<{ x: number; y: number }> {
+  const { mouse } = getNutJs()
   const pos = await mouse.getPosition()
   return { x: pos.x, y: pos.y }
 }
@@ -298,14 +368,4 @@ export async function getMousePosition(): Promise<{ x: number; y: number }> {
  */
 export function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-/**
- * Check if desktop automation is available
- * (nut.js requires a display)
- */
-export function isDesktopAvailable(): boolean {
-  // In headless CI environments, this would fail
-  // Could add more sophisticated detection
-  return process.env.DISPLAY !== undefined || process.platform === 'win32' || process.platform === 'darwin'
 }

@@ -11,7 +11,8 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        external: ['bufferutil', 'utf-8-validate']
+        // Native modules that must not be bundled
+        external: ['bufferutil', 'utf-8-validate', '@nut-tree-fork/nut-js', '@nut-tree-fork/libnut']
       }
     }
   },
