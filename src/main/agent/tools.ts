@@ -40,7 +40,8 @@ export function buildTools(): Tool<any>[] {
     browserReadTool,
     browserScreenshotTool,
     // Desktop automation tools
-    desktopClickTool,
+    desktopClickInWindowTool,  // RECOMMENDED: relative click within a window
+    desktopClickTool,          // Advanced: absolute screen coordinates
     desktopTypeTool,
     desktopShortcutTool,
     desktopScreenshotTool,
@@ -794,7 +795,7 @@ const browserScreenshotTool: Tool<any> = {
 
 const desktopClickTool: Tool<any> = {
   name: 'desktop_click',
-  description: 'Click at absolute screen coordinates. IMPORTANT: On multi-monitor setups, coordinates span all monitors (e.g., second monitor at X=2560 if primary is 2560px wide). Always use desktop_get_window_bounds first to get the target window position, then calculate: clickX = window.left + offsetX, clickY = window.top + offsetY.',
+  description: 'ADVANCED: Click at absolute screen coordinates. For most cases, use desktop_click_in_window instead — it handles coordinate math automatically. This tool requires you to manually calculate absolute coordinates including multi-monitor offsets.',
   parameters: {
     type: 'object',
     properties: {
@@ -817,6 +818,80 @@ const desktopClickTool: Tool<any> = {
         await desktop.click(args.x, args.y, args.button || 'left')
       }
       return { success: true, message: `Clicked at (${args.x}, ${args.y})` }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopClickInWindowTool: Tool<any> = {
+  name: 'desktop_click_in_window',
+  description: 'RECOMMENDED: Click at a position RELATIVE to a window. You provide the window title and x,y coordinates within that window (where 0,0 is the top-left corner of the window). This tool handles all coordinate math automatically, including multi-monitor offsets. IMPORTANT: If the screenshot image appears smaller than its actual dimensions (check the width/height returned by desktop_screenshot_window), provide imageWidth/imageHeight so coordinates can be scaled correctly.',
+  parameters: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Window title to click in (partial match, case-insensitive)' },
+      x: { type: 'number', description: 'X coordinate relative to window/image top-left' },
+      y: { type: 'number', description: 'Y coordinate relative to window/image top-left' },
+      imageWidth: { type: 'number', description: 'If the screenshot appears scaled, provide the displayed image width here so we can scale coordinates to actual window size' },
+      imageHeight: { type: 'number', description: 'If the screenshot appears scaled, provide the displayed image height here so we can scale coordinates to actual window size' },
+      button: { type: 'string', enum: ['left', 'right'], description: 'Mouse button to click (default: left)' },
+      doubleClick: { type: 'boolean', description: 'Whether to double-click (default: false)' }
+    },
+    required: ['title', 'x', 'y']
+  },
+  skipPermission: false,
+  handler: async (args: { title: string; x: number; y: number; imageWidth?: number; imageHeight?: number; button?: 'left' | 'right'; doubleClick?: boolean }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      // Get window bounds first
+      const windowInfo = await desktop.getWindowBounds(args.title)
+      if (!windowInfo) {
+        return { success: false, error: `No window found matching "${args.title}"` }
+      }
+      
+      // Focus the window first
+      await desktop.focusWindow(args.title)
+      
+      // Scale coordinates if image dimensions provided
+      let scaledX = args.x
+      let scaledY = args.y
+      if (args.imageWidth && args.imageHeight) {
+        const scaleX = windowInfo.bounds.width / args.imageWidth
+        const scaleY = windowInfo.bounds.height / args.imageHeight
+        scaledX = Math.round(args.x * scaleX)
+        scaledY = Math.round(args.y * scaleY)
+      }
+      
+      // Calculate absolute coordinates
+      const absX = windowInfo.bounds.left + scaledX
+      const absY = windowInfo.bounds.top + scaledY
+      
+      // Validate coordinates are within window bounds
+      if (scaledX < 0 || scaledX > windowInfo.bounds.width || scaledY < 0 || scaledY > windowInfo.bounds.height) {
+        return { 
+          success: false, 
+          error: `Coordinates (${scaledX}, ${scaledY}) are outside window bounds (${windowInfo.bounds.width}x${windowInfo.bounds.height}). Window "${windowInfo.title}" is at screen position (${windowInfo.bounds.left}, ${windowInfo.bounds.top}).`
+        }
+      }
+      
+      // Click
+      if (args.doubleClick) {
+        await desktop.doubleClick(absX, absY)
+      } else {
+        await desktop.click(absX, absY, args.button || 'left')
+      }
+      
+      const scaling = args.imageWidth ? ` (scaled from image ${args.imageWidth}x${args.imageHeight} to window ${windowInfo.bounds.width}x${windowInfo.bounds.height})` : ''
+      return { 
+        success: true, 
+        message: `Clicked at window-relative (${scaledX}, ${scaledY}) = screen absolute (${absX}, ${absY}) in "${windowInfo.title}"${scaling}`,
+        windowTitle: windowInfo.title,
+        windowBounds: windowInfo.bounds,
+        clickedAt: { relative: { x: scaledX, y: scaledY }, absolute: { x: absX, y: absY } }
+      }
     } catch (err: any) {
       return { success: false, error: err.message }
     }
@@ -1032,7 +1107,7 @@ const desktopGetWindowBoundsTool: Tool<any> = {
 
 const desktopScreenshotWindowTool: Tool<any> = {
   name: 'desktop_screenshot_window',
-  description: 'RECOMMENDED: Take a screenshot of a specific window by title. Returns a base64-encoded PNG image with window bounds (left, top, width, height). IMPORTANT: The image may be displayed smaller than its actual dimensions. Use the returned width/height to scale coordinates. To click: desktop_click(left + imageX * (width/displayedWidth), top + imageY * (height/displayedHeight)).',
+  description: 'Take a screenshot of a specific window by title. Returns a base64-encoded PNG image with actual window dimensions. To click, use desktop_click_in_window with the same title. If the displayed image appears smaller than the actual dimensions returned, pass imageWidth/imageHeight to desktop_click_in_window for automatic coordinate scaling.',
   parameters: {
     type: 'object',
     properties: {
@@ -1054,11 +1129,9 @@ const desktopScreenshotWindowTool: Tool<any> = {
           imageBase64: base64,
           mimeType: 'image/png',
           title: result.title,
-          left: result.bounds.left,
-          top: result.bounds.top,
           width: result.bounds.width,
           height: result.bounds.height,
-          coordinateInfo: `Window "${result.title}" at screen position (${result.bounds.left}, ${result.bounds.top}), size ${result.bounds.width}x${result.bounds.height}. ACTUAL image dimensions are ${result.bounds.width}x${result.bounds.height}. If image appears smaller (e.g., 400x300), scale your coordinates: clickX = ${result.bounds.left} + estimatedX * (${result.bounds.width}/displayedWidth), clickY = ${result.bounds.top} + estimatedY * (${result.bounds.height}/displayedHeight).`
+          nextStep: `ACTUAL image size: ${result.bounds.width}x${result.bounds.height}. To click, use desktop_click_in_window(title="${result.title}", x=..., y=...). If this image appears smaller than ${result.bounds.width}x${result.bounds.height} in your view, also pass imageWidth and imageHeight with the displayed size so coordinates are scaled correctly.`
         }
       } else {
         return { success: false, error: `No window found matching "${args.title}"` }
