@@ -47,6 +47,12 @@ export function buildTools(): Tool<any>[] {
     desktopTypeTool,
     desktopShortcutTool,
     desktopScreenshotTool,
+    // Window management tools
+    desktopListWindowsTool,
+    desktopFocusWindowTool,
+    desktopGetActiveWindowTool,
+    desktopGetWindowBoundsTool,
+    desktopScreenshotWindowTool,
     // Skill marketplace tools
     searchSkillsTool,
     installSkillTool,
@@ -880,7 +886,7 @@ const desktopClickTool: Tool<any> = {
 
 const desktopTypeTool: Tool<any> = {
   name: 'desktop_type',
-  description: 'Type text using the keyboard. Text is typed at the current cursor position.',
+  description: 'Type text using the keyboard. Text is typed at the current cursor helloposition.',
   parameters: {
     type: 'object',
     properties: {
@@ -947,6 +953,172 @@ const desktopScreenshotTool: Tool<any> = {
         height: size.height,
         filePath,
         message: `Screenshot saved to ${filePath} (${size.width}x${size.height})`
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+// ============================================================
+// Window Management Tools — list, focus, and interact with windows
+// ============================================================
+
+const desktopListWindowsTool: Tool<any> = {
+  name: 'desktop_list_windows',
+  description: 'List all open windows with their titles and screen bounds. Use this to discover what applications are running and where they are positioned. Returns an array of windows with title, left, top, width, height.',
+  parameters: {
+    type: 'object',
+    properties: {}
+  },
+  skipPermission: true, // read-only
+  handler: async () => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      const windows = await desktop.listWindows()
+      return {
+        success: true,
+        count: windows.length,
+        windows: windows.map(w => ({
+          title: w.title,
+          left: w.bounds.left,
+          top: w.bounds.top,
+          width: w.bounds.width,
+          height: w.bounds.height
+        }))
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopFocusWindowTool: Tool<any> = {
+  name: 'desktop_focus_window',
+  description: 'Focus (bring to front) a window by its title. Partial, case-insensitive matching is used. For example, "WeChat" will match "WeChat - John Doe". Always focus a window before clicking inside it to ensure it is visible.',
+  parameters: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Window title to search for (partial match, case-insensitive)' }
+    },
+    required: ['title']
+  },
+  skipPermission: false,
+  handler: async (args: { title: string }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      const found = await desktop.focusWindow(args.title)
+      if (found) {
+        return { success: true, message: `Focused window matching "${args.title}"` }
+      } else {
+        return { success: false, error: `No window found matching "${args.title}"` }
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopGetActiveWindowTool: Tool<any> = {
+  name: 'desktop_get_active_window',
+  description: 'Get the currently focused/active window title and bounds. Useful to know what window is in front before taking actions.',
+  parameters: {
+    type: 'object',
+    properties: {}
+  },
+  skipPermission: true,
+  handler: async () => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      const window = await desktop.getActiveWindow()
+      if (window) {
+        return {
+          success: true,
+          title: window.title,
+          left: window.bounds.left,
+          top: window.bounds.top,
+          width: window.bounds.width,
+          height: window.bounds.height
+        }
+      } else {
+        return { success: false, error: 'Could not determine active window' }
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopGetWindowBoundsTool: Tool<any> = {
+  name: 'desktop_get_window_bounds',
+  description: 'Get the screen bounds (position and size) of a window by title. Returns left, top, width, height in screen pixels. Use this to calculate where to click within a specific application.',
+  parameters: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Window title to search for (partial match, case-insensitive)' }
+    },
+    required: ['title']
+  },
+  skipPermission: true,
+  handler: async (args: { title: string }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      const window = await desktop.getWindowBounds(args.title)
+      if (window) {
+        return {
+          success: true,
+          title: window.title,
+          left: window.bounds.left,
+          top: window.bounds.top,
+          width: window.bounds.width,
+          height: window.bounds.height
+        }
+      } else {
+        return { success: false, error: `No window found matching "${args.title}"` }
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopScreenshotWindowTool: Tool<any> = {
+  name: 'desktop_screenshot_window',
+  description: 'Take a screenshot of a specific window by title. Focuses the window first, then captures just that window region. Returns the file path and window bounds. Use this instead of full-screen screenshots when you only need to see one application.',
+  parameters: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Window title to search for (partial match, case-insensitive)' }
+    },
+    required: ['title']
+  },
+  skipPermission: true,
+  handler: async (args: { title: string }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      const result = await desktop.takeWindowScreenshot(args.title)
+      if (result) {
+        return {
+          success: true,
+          filePath: result.filePath,
+          left: result.bounds.left,
+          top: result.bounds.top,
+          width: result.bounds.width,
+          height: result.bounds.height,
+          message: `Window screenshot saved to ${result.filePath} (${result.bounds.width}x${result.bounds.height})`
+        }
+      } else {
+        return { success: false, error: `No window found matching "${args.title}"` }
       }
     } catch (err: any) {
       return { success: false, error: err.message }

@@ -12,6 +12,12 @@ const require = createRequire(import.meta.url)
 // ============================================================
 
 // Type definitions for nut.js (runtime-loaded native module)
+interface WindowHandle {
+  title: Promise<string>
+  region: Promise<{ left: number; top: number; width: number; height: number }>
+  focus: () => Promise<void>
+}
+
 interface NutJsModule {
   mouse: {
     config: { autoDelayMs: number }
@@ -31,12 +37,15 @@ interface NutJsModule {
   }
   screen: {
     grab: () => Promise<{ data: Buffer; width: number; height: number }>
+    grabRegion: (region: { left: number; top: number; width: number; height: number }) => Promise<{ data: Buffer; width: number; height: number }>
     width: () => Promise<number>
     height: () => Promise<number>
   }
   Point: new (x: number, y: number) => { x: number; y: number }
   Button: { LEFT: unknown; RIGHT: unknown }
   Key: Record<string, unknown>
+  getWindows: () => Promise<WindowHandle[]>
+  getActiveWindow: () => Promise<WindowHandle>
 }
 
 // Lazy-load nut.js to handle native binding failures gracefully
@@ -424,4 +433,165 @@ export async function getMousePosition(): Promise<{ x: number; y: number }> {
  */
 export function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// ============================================================
+// Window Management — list, focus, and interact with windows
+// ============================================================
+
+export interface WindowInfo {
+  title: string
+  bounds: { left: number; top: number; width: number; height: number }
+}
+
+/**
+ * List all open windows with their titles and bounds
+ */
+export async function listWindows(): Promise<WindowInfo[]> {
+  const nutjs = getNutJs()
+  const handles = await nutjs.getWindows()
+  const windows: WindowInfo[] = []
+  
+  for (const handle of handles) {
+    try {
+      const title = await handle.title
+      const region = await handle.region
+      // Skip windows with empty titles or zero size (system/hidden windows)
+      if (title && region.width > 0 && region.height > 0) {
+        windows.push({
+          title,
+          bounds: {
+            left: region.left,
+            top: region.top,
+            width: region.width,
+            height: region.height
+          }
+        })
+      }
+    } catch {
+      // Skip windows we can't access
+    }
+  }
+  
+  return windows
+}
+
+/**
+ * Get the currently active/focused window
+ */
+export async function getActiveWindow(): Promise<WindowInfo | null> {
+  const nutjs = getNutJs()
+  try {
+    const handle = await nutjs.getActiveWindow()
+    const title = await handle.title
+    const region = await handle.region
+    return {
+      title,
+      bounds: {
+        left: region.left,
+        top: region.top,
+        width: region.width,
+        height: region.height
+      }
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Focus a window by title (partial match, case-insensitive)
+ */
+export async function focusWindow(titleQuery: string): Promise<boolean> {
+  const nutjs = getNutJs()
+  const handles = await nutjs.getWindows()
+  const query = titleQuery.toLowerCase()
+  
+  for (const handle of handles) {
+    try {
+      const title = await handle.title
+      if (title && title.toLowerCase().includes(query)) {
+        await handle.focus()
+        // Small delay to let the window come to front
+        await wait(100)
+        return true
+      }
+    } catch {
+      // Continue searching
+    }
+  }
+  
+  return false
+}
+
+/**
+ * Get bounds of a window by title (partial match, case-insensitive)
+ */
+export async function getWindowBounds(titleQuery: string): Promise<WindowInfo | null> {
+  const nutjs = getNutJs()
+  const handles = await nutjs.getWindows()
+  const query = titleQuery.toLowerCase()
+  
+  for (const handle of handles) {
+    try {
+      const title = await handle.title
+      if (title && title.toLowerCase().includes(query)) {
+        const region = await handle.region
+        return {
+          title,
+          bounds: {
+            left: region.left,
+            top: region.top,
+            width: region.width,
+            height: region.height
+          }
+        }
+      }
+    } catch {
+      // Continue searching
+    }
+  }
+  
+  return null
+}
+
+/**
+ * Take a screenshot of a specific window by title
+ */
+export async function takeWindowScreenshot(titleQuery: string): Promise<{ filePath: string; bounds: WindowInfo['bounds'] } | null> {
+  const nutjs = getNutJs()
+  const windowInfo = await getWindowBounds(titleQuery)
+  
+  if (!windowInfo) {
+    return null
+  }
+  
+  // Focus the window first so it's visible
+  await focusWindow(titleQuery)
+  await wait(200) // Wait for window to be fully visible
+  
+  // Grab just the window region
+  const image = await nutjs.screen.grabRegion({
+    left: windowInfo.bounds.left,
+    top: windowInfo.bounds.top,
+    width: windowInfo.bounds.width,
+    height: windowInfo.bounds.height
+  })
+  
+  // Ensure screenshots directory exists
+  const screenshotsDir = path.join(app.getPath('userData'), 'screenshots')
+  if (!fs.existsSync(screenshotsDir)) {
+    fs.mkdirSync(screenshotsDir, { recursive: true })
+  }
+  
+  // Generate unique filename with timestamp
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const safeTitle = windowInfo.title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)
+  const filePath = path.join(screenshotsDir, `window-${safeTitle}-${timestamp}.png`)
+  
+  // Encode BGRA to PNG
+  const pngBuffer = encodeRawBgraToPng(image.data, image.width, image.height)
+  fs.writeFileSync(filePath, pngBuffer)
+  
+  return { filePath, bounds: windowInfo.bounds }
 }
