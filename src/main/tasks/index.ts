@@ -29,7 +29,6 @@ function rowToTask(row: Record<string, unknown>): Task {
       externalUrl: row.source_external_url as string | undefined
     },
     projectIds: JSON.parse((row.project_ids as string) || '[]'),
-    relatedRelationIds: JSON.parse(row.related_relation_ids as string),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     dueDate: row.due_date as string | null,
@@ -130,8 +129,8 @@ export function createTask(input: CreateTaskInput): CreateTaskResult {
   }
 
   db.prepare(`
-    INSERT INTO tasks (id, title, description, status, priority, source_type, source_connection_id, source_external_id, source_external_url, project_ids, related_relation_ids, created_at, updated_at, due_date)
-    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO tasks (id, title, description, status, priority, source_type, source_connection_id, source_external_id, source_external_url, project_ids, created_at, updated_at, due_date)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.title,
@@ -142,7 +141,6 @@ export function createTask(input: CreateTaskInput): CreateTaskResult {
     input.source.externalId || null,
     input.source.externalUrl || null,
     JSON.stringify(projectIds),
-    JSON.stringify(input.relatedRelationIds || []),
     now,
     now,
     input.dueDate || null
@@ -179,7 +177,6 @@ export function updateTask(id: string, changes: Partial<Task>): Task {
   }
   if (changes.priority !== undefined) { sets.push('priority = ?'); params.push(changes.priority) }
   if (changes.projectIds !== undefined) { sets.push('project_ids = ?'); params.push(JSON.stringify(changes.projectIds)) }
-  if (changes.relatedRelationIds !== undefined) { sets.push('related_relation_ids = ?'); params.push(JSON.stringify(changes.relatedRelationIds)) }
   if (changes.dueDate !== undefined) { sets.push('due_date = ?'); params.push(changes.dueDate) }
   if (changes.seenAt !== undefined) { sets.push('seen_at = ?'); params.push(changes.seenAt) }
   if (changes.snoozedUntil !== undefined) { sets.push('snoozed_until = ?'); params.push(changes.snoozedUntil) }
@@ -438,6 +435,6 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 }
 
 // === Priority Calculation ===
-// Factors: relation role, deadline proximity, explicit urgency
+// Factors: deadline proximity, explicit urgency
 
 

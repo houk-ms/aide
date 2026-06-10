@@ -54,7 +54,6 @@ function initSchema(db: DatabaseInstance): void {
       source_external_id TEXT,
       source_external_url TEXT,
       project_ids TEXT NOT NULL DEFAULT '[]',
-      related_relation_ids TEXT NOT NULL DEFAULT '[]',
       working_state TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -129,24 +128,6 @@ function initSchema(db: DatabaseInstance): void {
       repo_path TEXT,
       docs_path TEXT,
       tech_stack TEXT,
-      team TEXT NOT NULL DEFAULT '[]',
-      notes TEXT,
-      source TEXT NOT NULL DEFAULT 'user',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS relations (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL,
-      org TEXT,
-      title TEXT,
-      email TEXT,
-      teams_id TEXT,
-      timezone TEXT,
-      expertise TEXT NOT NULL DEFAULT '[]',
-      communication_style TEXT,
       notes TEXT,
       source TEXT NOT NULL DEFAULT 'user',
       created_at TEXT NOT NULL,
@@ -217,7 +198,8 @@ const MIGRATIONS: Migration[] = [
       if (!cols('projects').includes('source')) {
         db.exec("ALTER TABLE projects ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
       }
-      if (!cols('relations').includes('source')) {
+      const relationsExists = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='relations'").get() as { name: string } | undefined) !== undefined
+      if (relationsExists && !cols('relations').includes('source')) {
         db.exec("ALTER TABLE relations ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
       }
       const taskCols = cols('tasks')
@@ -323,6 +305,23 @@ const MIGRATIONS: Migration[] = [
       db.exec("DELETE FROM memory_entries WHERE layer = 'L2'")
     },
   },
+  {
+    version: 6,
+    name: 'remove relations: drop relations table, tasks.related_relation_ids, projects.team',
+    up: (db) => {
+      const hasTable = (name: string) =>
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name) as { name: string } | undefined) !== undefined
+      const cols = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(c => c.name)
+
+      if (hasTable('relations')) db.exec('DROP TABLE relations')
+      if (cols('tasks').includes('related_relation_ids')) {
+        db.exec('ALTER TABLE tasks DROP COLUMN related_relation_ids')
+      }
+      if (cols('projects').includes('team')) {
+        db.exec('ALTER TABLE projects DROP COLUMN team')
+      }
+    },
+  },
 ]
 
 const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
@@ -400,19 +399,17 @@ Before handling each new item, call query_aide_tasks to see current active tasks
 
 Keep the bar for recording activity strict: only record when something actually moves forward, gets blocked, changes status, or requires substantive input from the user. Skip pleasantries, acknowledgements, forwards, CCs, bot notifications, and minor wording tweaks; default to ignoring — recording is the exception. Record each piece of progress only once (check with get_task_activities first), and merge multiple related items for the same task in one poll into a single note.`
 
-const DEFAULT_WORLD_SYNC_INSTRUCTION = `Maintain the contacts and projects lists. Do not create tasks.
-
-Contacts: look at people with 1:1 interactions over the past week (direct emails, direct replies, 1:1 chats). Only create/update contacts for these people. Skip broadcast CCs and people who appear only once.
+const DEFAULT_WORLD_SYNC_INSTRUCTION = `Maintain the projects list. Do not create tasks.
 
 Projects: look at GitHub repos with recent commit/PR/issue activity. Make sure a matching project exists (must have a repo URL).
 
-Retire: contacts with no interaction for 3 months → inactive. Projects with no activity → archived.`
+Retire: projects with no activity → archived.`
 
 const BUILTIN_JOBS: { id: string; name: string; cron: string; instruction: string; deliveryTargets: string[] }[] = [
   { id: 'morning-briefing', name: 'Daily morning briefing', cron: '0 9 * * 1-5', deliveryTargets: ['desktop', 'wechat'], instruction: 'Check for new email, Teams messages, and GitHub notifications since the last run, plus today\'s calendar events. Create a Task for items that need the user to act (fill sourceType by the real source: github/teams/email/calendar, and attach sourceId and sourceUrl), and give a prioritized summary of suggestions for today.' },
   { id: 'periodic-poll', name: 'Periodic poll', cron: '*/30 * * * *', deliveryTargets: [], instruction: DEFAULT_PERIODIC_POLL_INSTRUCTION },
   { id: 'daily-reconcile', name: 'End-of-day review', cron: '0 18 * * 1-5', deliveryTargets: ['desktop', 'wechat'], instruction: 'Review today\'s task statuses. Mark tasks that are confirmed done but unmarked as completed. Suggest cleaning up P2 tasks untouched for over 7 days. Generate a short daily summary.' },
-  { id: 'world-sync', name: 'Relationships & projects sync', cron: '0 10 * * 1', deliveryTargets: [], instruction: DEFAULT_WORLD_SYNC_INSTRUCTION },
+  { id: 'world-sync', name: 'Projects sync', cron: '0 10 * * 1', deliveryTargets: [], instruction: DEFAULT_WORLD_SYNC_INSTRUCTION },
 ]
 
 /** The set of built-in job IDs, used by the jobs layer to enforce ownership. */

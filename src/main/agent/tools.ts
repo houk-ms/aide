@@ -1,7 +1,6 @@
 import { writeMemory, searchMemory, updateMemory, markMemoryInactive } from '../memory'
 import { createTask, updateTask, listTasks, getTask, addTaskActivity, listTaskActivities, findRelatedTask } from '../tasks'
 import { listProjects, createProject, updateProject, deleteProject } from '../projects'
-import { listRelations, createRelation, updateRelation, deleteRelation } from '../relations'
 import { getPreferences, setPreferences } from '../preferences'
 import { listJobs, createJob, updateJob, deleteJob, toggleJob } from '../jobs'
 import { showSystemNotification } from '../index'
@@ -30,9 +29,7 @@ export function buildTools(): Tool<any>[] {
     addTaskActivityTool,
     getTaskActivitiesTool,
     queryProjectsTool,
-    queryRelationsTool,
     manageProjectTool,
-    manageRelationTool,
     manageJobTool,
     managePreferencesTool,
     generateReportTool,
@@ -226,8 +223,7 @@ const createTaskTool: Tool<any> = {
       sourceId: { type: 'string', description: 'Unique source identifier (email ID, notification ID, message ID, PR/Issue number). Extract from MCP response data.' },
       sourceUrl: { type: 'string', description: 'External link to the source (PR/Issue URL, email/message deep link, etc.) for one-click navigation.' },
       dueDate: { type: 'string', description: 'ISO 8601 due date' },
-      projectIds: { type: 'array', items: { type: 'string' }, description: 'Associated project IDs' },
-      relatedRelationIds: { type: 'array', items: { type: 'string' }, description: 'List of related people IDs' }
+      projectIds: { type: 'array', items: { type: 'string' }, description: 'Associated project IDs' }
     },
     required: ['title', 'priority', 'description']
   },
@@ -485,48 +481,7 @@ const queryProjectsTool: Tool<any> = {
         id: p.id,
         name: p.name,
         description: p.description,
-        techStack: p.techStack,
-        team: p.team
-      }))
-    }
-  }
-}
-
-const queryRelationsTool: Tool<any> = {
-  name: 'query_relations',
-  description: 'Query existing contacts. Use when creating a task to determine which known people are involved. Also used to look up someone\'s contact info, role, etc.',
-  parameters: {
-    type: 'object',
-    properties: {
-      keyword: { type: 'string', description: 'Fuzzy search by name, organization, or title (optional; returns all if omitted)' },
-      role: { type: 'string', enum: ['manager', 'peer', 'report', 'external', 'stakeholder'], description: 'Filter by role' }
-    }
-  },
-  skipPermission: true,
-  handler: async (args: { keyword?: string; role?: string }) => {
-    let relations = listRelations()
-    if (args?.role) {
-      relations = relations.filter(r => r.role === args.role)
-    }
-    if (args?.keyword) {
-      const kw = args.keyword.toLowerCase()
-      relations = relations.filter(r =>
-        r.name.toLowerCase().includes(kw) ||
-        (r.org || '').toLowerCase().includes(kw) ||
-        (r.title || '').toLowerCase().includes(kw) ||
-        (r.email || '').toLowerCase().includes(kw)
-      )
-    }
-    if (relations.length === 0) return { relations: [], message: 'No matching contact found', hint: 'If a new person is involved, create them with manage_relation(action: create)' }
-    return {
-      relations: relations.map(r => ({
-        id: r.id,
-        name: r.name,
-        role: r.role,
-        org: r.org,
-        title: r.title,
-        email: r.email,
-        expertise: r.expertise
+        techStack: p.techStack
       }))
     }
   }
@@ -545,7 +500,6 @@ const manageProjectTool: Tool<any> = {
       repoPath: { type: 'string', description: 'GitHub repo URL or local folder path (required for create)' },
       docsPath: { type: 'string', description: 'Docs path' },
       techStack: { type: 'string', description: 'Tech stack' },
-      team: { type: 'array', items: { type: 'string' }, description: 'List of team member relation IDs' },
       notes: { type: 'string', description: 'Notes' }
     },
     required: ['action']
@@ -569,52 +523,6 @@ const manageProjectTool: Tool<any> = {
       if (!id) return { success: false, error: 'delete requires id' }
       deleteProject(id)
       emitToRenderer({ type: 'project:deleted', projectId: id })
-      return { success: true, message: 'Deleted' }
-    }
-    return { success: false, error: 'Unknown action' }
-  }
-}
-
-const manageRelationTool: Tool<any> = {
-  name: 'manage_relation',
-  description: 'Create, update, or delete a contact.',
-  parameters: {
-    type: 'object',
-    properties: {
-      action: { type: 'string', enum: ['create', 'update', 'delete'], description: 'Operation type' },
-      id: { type: 'string', description: 'Contact ID (required for update)' },
-      name: { type: 'string', description: 'Name (required for create)' },
-      role: { type: 'string', enum: ['manager', 'peer', 'report', 'external', 'stakeholder'], description: 'Role relationship' },
-      org: { type: 'string', description: 'Organization/team' },
-      title: { type: 'string', description: 'Job title' },
-      email: { type: 'string', description: 'Email' },
-      teamsId: { type: 'string', description: 'Teams ID' },
-      timezone: { type: 'string', description: 'Timezone' },
-      expertise: { type: 'array', items: { type: 'string' }, description: 'Areas of expertise' },
-      communicationStyle: { type: 'string', description: 'Communication preference' },
-      notes: { type: 'string', description: 'Notes' }
-    },
-    required: ['action']
-  },
-  skipPermission: true, // contact management runs automatically
-  handler: async (args: any) => {
-    const { action, id, ...fields } = args
-    if (action === 'create') {
-      if (!fields.name) return { success: false, error: 'create requires name' }
-      if (!fields.role) fields.role = 'peer' // default to peer
-      const relation = createRelation({ ...fields, source: 'agent' })
-      emitToRenderer({ type: 'relation:created', relation })
-      return { success: true, id: relation.id, name: relation.name }
-    }
-    if (action === 'update') {
-      if (!id) return { success: false, error: 'update requires id' }
-      const relation = updateRelation(id, fields)
-      return { success: true, id: relation.id, name: relation.name }
-    }
-    if (action === 'delete') {
-      if (!id) return { success: false, error: 'delete requires id' }
-      deleteRelation(id)
-      emitToRenderer({ type: 'relation:deleted', relationId: id })
       return { success: true, message: 'Deleted' }
     }
     return { success: false, error: 'Unknown action' }

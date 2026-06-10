@@ -1,11 +1,10 @@
 import { create } from 'zustand'
-import type { Project, Relation, Job, ConnectionStatus, UserPreferences } from '@shared/types'
+import type { Project, Job, ConnectionStatus, UserPreferences } from '@shared/types'
 
 interface SettingsStore {
   isOpen: boolean
-  activeTab: 'connections' | 'projects' | 'relations' | 'jobs' | 'memory' | 'skills' | 'preferences'
+  activeTab: 'connections' | 'projects' | 'jobs' | 'memory' | 'skills' | 'preferences'
   projects: Project[]
-  relations: Relation[]
   jobs: Job[]
   connections: ConnectionStatus[]
   preferences: UserPreferences | null
@@ -15,7 +14,6 @@ interface SettingsStore {
   setTab: (tab: SettingsStore['activeTab']) => void
 
   fetchProjects: () => Promise<void>
-  fetchRelations: () => Promise<void>
   fetchJobs: () => Promise<void>
   fetchConnections: () => Promise<void>
   fetchPreferences: () => Promise<void>
@@ -27,7 +25,6 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   isOpen: false,
   activeTab: 'connections',
   projects: [],
-  relations: [],
   jobs: [],
   connections: [],
   preferences: null,
@@ -39,11 +36,6 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   fetchProjects: async () => {
     const projects = await window.aide.projects.list()
     set({ projects })
-  },
-
-  fetchRelations: async () => {
-    const relations = await window.aide.relations.list()
-    set({ relations })
   },
 
   fetchJobs: async () => {

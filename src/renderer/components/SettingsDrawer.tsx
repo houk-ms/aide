@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { X, Link2, FolderOpen, Users, Timer, Brain, Sliders, Trash2, Plus, Save, Check, Github, Send, RefreshCw, Download, CheckCircle2, AlertCircle, Sparkles, AlertTriangle, Search } from 'lucide-react'
+import { X, Link2, FolderOpen, Timer, Brain, Sliders, Trash2, Plus, Save, Check, Github, Send, RefreshCw, Download, CheckCircle2, AlertCircle, Sparkles, AlertTriangle, Search } from 'lucide-react'
 import { WeChatLogo, TelegramLogo, DiscordLogo } from '../brand/icons'
 import { useSettingsStore } from '../stores/settingsStore'
-import type { Project, Relation, Job, ConnectionStatus, MemoryEntry, WeChatStatus, TelegramStatus, DiscordStatus, DeliveryTarget, UpdateState, Skill, BrowsableSkill } from '@shared/types'
+import type { Project, Job, ConnectionStatus, MemoryEntry, WeChatStatus, TelegramStatus, DiscordStatus, DeliveryTarget, UpdateState, Skill, BrowsableSkill } from '@shared/types'
 import { ChannelsList } from '../channels/registry'
 
 function MicrosoftIcon() {
@@ -18,10 +18,10 @@ function MicrosoftIcon() {
 
 export function SettingsDrawer() {
   const { isOpen, activeTab, close, setTab, projects, jobs, connections,
-    fetchProjects, fetchRelations, fetchJobs, fetchConnections } = useSettingsStore()
+    fetchProjects, fetchJobs, fetchConnections } = useSettingsStore()
 
   useEffect(() => {
-    if (isOpen) { fetchProjects(); fetchRelations(); fetchJobs(); fetchConnections() }
+    if (isOpen) { fetchProjects(); fetchJobs(); fetchConnections() }
   }, [isOpen])
 
   if (!isOpen) return null
@@ -259,7 +259,6 @@ function ProjectsTab({ projects, onRefresh }: { projects: Project[]; onRefresh: 
               <div className="flex items-center gap-3 mt-2 text-[11px] text-text-tertiary">
                 {p.repoPath && <span className="flex items-center gap-1"><FolderOpen size={11} /> {p.repoPath}</span>}
                 {p.techStack && <span>{p.techStack}</span>}
-                {p.team.length > 0 && <span className="flex items-center gap-1"><Users size={11} /> {p.team.length}</span>}
               </div>
             </div>
             <button onClick={() => setEditId(p.id)} className="text-[12px] text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-all">
@@ -284,91 +283,9 @@ function ProjectForm({ initial, onSave, onCancel, onDelete }: {
       <Field label="Name" value={name} onChange={setName} placeholder="Project name" required />
       <Field label="Repository" value={repoPath} onChange={setRepoPath} placeholder="owner/repo or local path (optional)" />
       <Field label="One-line description" value={description} onChange={setDescription} placeholder="What's this project about? (optional)" multiline />
-      <FormHint>Aide keeps details like tech stack, team, and docs up to date on its own as you work.</FormHint>
+      <FormHint>Aide keeps details like tech stack and docs up to date on its own as you work.</FormHint>
       <FormActions
         onSave={() => onSave({ name, description, repoPath: repoPath || undefined })}
-        onCancel={onCancel}
-        onDelete={onDelete}
-        disabled={!name.trim()}
-      />
-    </FormCard>
-  )
-}
-
-/* ═══════════════════════════════════════════
-   Relations Tab
-   ═══════════════════════════════════════════ */
-
-function RelationsTab({ relations, onRefresh }: { relations: Relation[]; onRefresh: () => void }) {
-  const [adding, setAdding] = useState(false)
-  const [editId, setEditId] = useState<string | null>(null)
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Desc>Key people you work with, so Aide can prioritize their messages.</Desc>
-        <Btn onClick={() => setAdding(true)}><Plus size={12} /> Add</Btn>
-      </div>
-
-      {adding && (
-        <RelationForm onSave={async (data) => { await window.aide.relations.create(data); setAdding(false); onRefresh() }} onCancel={() => setAdding(false)} />
-      )}
-
-      {relations.length === 0 && !adding && <Empty>No contacts yet.</Empty>}
-
-      {relations.map(r => editId === r.id ? (
-        <RelationForm key={r.id} initial={r} onSave={async (data) => { await window.aide.relations.update(r.id, data); setEditId(null); onRefresh() }} onCancel={() => setEditId(null)} onDelete={async () => { await window.aide.relations.delete(r.id); setEditId(null); onRefresh() }} />
-      ) : (
-        <Card key={r.id} className="group">
-          <div className="flex items-start justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <p className="text-[13px] font-medium text-text-primary">{r.name}</p>
-                <RoleBadge role={r.role} />
-              </div>
-              <p className="text-[12px] text-text-tertiary mt-0.5">
-                {[r.title, r.org].filter(Boolean).join(' · ') || 'Not set'}
-              </p>
-              {r.expertise.length > 0 && (
-                <div className="flex gap-1 mt-1.5 flex-wrap">
-                  {r.expertise.map((e, i) => <Tag key={i}>{e}</Tag>)}
-                </div>
-              )}
-            </div>
-            <button onClick={() => setEditId(r.id)} className="text-[12px] text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-all">Edit</button>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
-function RelationForm({ initial, onSave, onCancel, onDelete }: {
-  initial?: Partial<Relation>; onSave: (data: any) => Promise<void>; onCancel: () => void; onDelete?: () => Promise<void>
-}) {
-  const [name, setName] = useState(initial?.name || '')
-  const [role, setRole] = useState<string>(initial?.role || 'peer')
-  const [notes, setNotes] = useState(initial?.notes || '')
-
-  return (
-    <FormCard>
-      <div className="grid grid-cols-2 gap-2.5">
-        <Field label="Name" value={name} onChange={setName} placeholder="Name" required />
-        <div>
-          <label className="text-[11px] text-text-tertiary font-medium block mb-1">Role</label>
-          <select value={role} onChange={e => setRole(e.target.value)} className="w-full bg-surface-0 border border-edge rounded-lg px-2.5 py-[7px] text-[13px] text-text-primary outline-none focus:border-accent/50 transition-colors appearance-none">
-            <option value="manager">Manager</option>
-            <option value="peer">Peer</option>
-            <option value="report">Report</option>
-            <option value="external">External</option>
-            <option value="stakeholder">Stakeholder</option>
-          </select>
-        </div>
-      </div>
-      <Field label="Notes" value={notes} onChange={setNotes} placeholder="Why they matter or how you work together (optional)" multiline />
-      <FormHint>Aide picks up details like email, Teams handle, title, and working style on its own as you interact.</FormHint>
-      <FormActions
-        onSave={() => onSave({ name, role, notes: notes || undefined })}
         onCancel={onCancel}
         onDelete={onDelete}
         disabled={!name.trim()}
@@ -1551,18 +1468,6 @@ function SettingRow({ label, description, children }: { label: string; descripti
 
 function Tag({ children }: { children: string }) {
   return <span className="text-[11px] px-1.5 py-[1px] rounded-md bg-surface-2 text-text-tertiary border border-edge-subtle">{children}</span>
-}
-
-function RoleBadge({ role }: { role: string }) {
-  const styles: Record<string, string> = {
-    manager: 'bg-purple-500/10 text-purple-400 border-purple-500/15',
-    peer: 'bg-surface-2 text-text-tertiary border-edge',
-    report: 'bg-blue-500/10 text-blue-400 border-blue-500/15',
-    external: 'bg-warning/10 text-warning border-warning/15',
-    stakeholder: 'bg-success/10 text-success border-success/15'
-  }
-  const labels: Record<string, string> = { manager: 'Manager', peer: 'Peer', report: 'Report', external: 'External', stakeholder: 'Stakeholder' }
-  return <span className={`text-[11px] px-1.5 py-[1px] rounded-md font-medium border ${styles[role] || styles.peer}`}>{labels[role] || role}</span>
 }
 
 function describeCron(cron: string): string {

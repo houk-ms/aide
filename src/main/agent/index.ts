@@ -1,7 +1,6 @@
 import { getL0Content, searchMemory } from '../memory'
 import { createTask, updateTask, listTasks, getTask } from '../tasks'
 import { getProject, listProjects } from '../projects'
-import { listRelations, getRelation } from '../relations'
 import { getAutonomyLevel } from '../preferences'
 import { getConnectionStatus } from '../connections'
 import { getSkillsDirectory } from '../skills'
@@ -108,10 +107,6 @@ const hooks: SessionConfig['hooks'] = {
             parts.push(projects.map(p => formatProjectContext(p)).join('\n\n'))
           }
         }
-        if (task.relatedRelationIds.length > 0) {
-          const rels = task.relatedRelationIds.map(id => getRelation(id)).filter(Boolean)
-          if (rels.length) parts.push(formatRelationsContext(rels as any[]))
-        }
       }
     } else if (invocation.sessionId === 'general') {
       // General chat: inject workspace awareness (task summary + connection status + projects)
@@ -140,7 +135,7 @@ const hooks: SessionConfig['hooks'] = {
     }
 
     // Token budget: ~3K total. Fixed prompt ~1K, L0 ~0.5K, dynamic ~1K
-    // Truncation priority: Task > Relation > Project > L1
+    // Truncation priority: Task > Project > L1
     return { additionalContext: parts.join('\n\n') }
   },
 
@@ -428,10 +423,9 @@ Use Aide's task tools (create_aide_task, update_aide_task, query_aide_tasks) for
 
 **De-dup**: before creating, confirm no identical task already exists (the system injects the existing task list). Pass sourceId for exact de-dup.
 
-## Contacts & projects
+## Projects
 
 Be restrained. Quality over quantity.
-- Contacts: only record people the user has direct, substantive dealings with. Don't record people in a group who never interacted with the user. Test: will this person still matter next week?
 - Projects: must map to a real repo (has a GitHub URL or local path). Don't create abstract concepts.
 - Don't record on first sight; create only after it proves important or recurring.
 
@@ -748,7 +742,7 @@ export async function executeJobSession(instruction: string, jobId: string, last
     'periodic-poll': 300_000,      // 5 min — checks new items, creates tasks
     'morning-briefing': 480_000,   // 8 min — scans all sources, creates many tasks
     'eod-review': 300_000,         // 5 min — reviews today's tasks
-    'world-sync': 600_000,         // 10 min — full relation/project sync
+    'world-sync': 600_000,         // 10 min — full project sync
   }
   const timeoutMs = JOB_TIMEOUTS[jobId] || 300_000
 
@@ -937,12 +931,6 @@ function formatProjectContext(p: { name: string; description: string; repoPath: 
   return lines.join('\n')
 }
 
-function formatRelationsContext(rels: Array<{ name: string; role: string; expertise: string[]; communicationStyle: string | null }>): string {
-  return '## Related people\n' + rels.map(r =>
-    `- ${r.name} (${r.role})${r.expertise.length ? ' — ' + r.expertise.join(', ') : ''}${r.communicationStyle ? ' — ' + r.communicationStyle : ''}`
-  ).join('\n')
-}
-
 function emitEvent(event: { type: string; [key: string]: unknown }): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('aide:event', event)
@@ -985,20 +973,4 @@ function truncatePreview(value: string, max = 160): string | undefined {
   const compact = value.replace(/\s+/g, ' ').trim()
   if (!compact) return undefined
   return compact.length > max ? compact.slice(0, max - 1) + '…' : compact
-}
-
-// === Relation cleanup helper ===
-
-export function cleanupRelationReferences(relationId: string): void {
-  const db = getDb()
-  const rows = db.prepare(
-    "SELECT id, related_relation_ids FROM tasks WHERE related_relation_ids LIKE ?"
-  ).all(`%${relationId}%`) as { id: string; related_relation_ids: string }[]
-
-  for (const row of rows) {
-    const ids: string[] = JSON.parse(row.related_relation_ids)
-    const filtered = ids.filter(id => id !== relationId)
-    db.prepare('UPDATE tasks SET related_relation_ids = ? WHERE id = ?')
-      .run(JSON.stringify(filtered), row.id)
-  }
 }

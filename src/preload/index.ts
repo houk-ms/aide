@@ -58,13 +58,6 @@ const api: AideAPI = {
     update: (id, changes) => ipcRenderer.invoke('projects:update', id, changes),
     delete: (id) => ipcRenderer.invoke('projects:delete', id)
   },
-  relations: {
-    list: () => ipcRenderer.invoke('relations:list'),
-    get: (id) => ipcRenderer.invoke('relations:get', id),
-    create: (input) => ipcRenderer.invoke('relations:create', input),
-    update: (id, changes) => ipcRenderer.invoke('relations:update', id, changes),
-    delete: (id) => ipcRenderer.invoke('relations:delete', id)
-  },
   preferences: {
     get: () => ipcRenderer.invoke('preferences:get'),
     set: (prefs) => ipcRenderer.invoke('preferences:set', prefs)

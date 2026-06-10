@@ -10,9 +10,8 @@ export interface Task {
   // Source tracing
   source: TaskSource
 
-  // Relations
+  // Associations
   projectIds: string[]
-  relatedRelationIds: string[]
 
   // Time
   createdAt: string // ISO 8601
@@ -85,33 +84,11 @@ export interface Project {
   repoPath: string | null
   docsPath: string | null
   techStack: string | null
-  team: string[]
   notes: string | null
   source: 'user' | 'agent'
   createdAt: string
   updatedAt: string
 }
-
-// === Relation ===
-
-export interface Relation {
-  id: string
-  name: string
-  role: RelationRole
-  org: string | null
-  title: string | null
-  email: string | null
-  teamsId: string | null
-  timezone: string | null
-  expertise: string[]
-  communicationStyle: string | null
-  notes: string | null
-  source: 'user' | 'agent'
-  createdAt: string
-  updatedAt: string
-}
-
-export type RelationRole = 'manager' | 'peer' | 'report' | 'external' | 'stakeholder'
 
 // === Job ===
 
@@ -343,13 +320,6 @@ export interface AideAPI {
     update(id: string, changes: Partial<Project>): Promise<Project>
     delete(id: string): Promise<void>
   }
-  relations: {
-    list(): Promise<Relation[]>
-    get(id: string): Promise<Relation | null>
-    create(input: CreateRelationInput): Promise<Relation>
-    update(id: string, changes: Partial<Relation>): Promise<Relation>
-    delete(id: string): Promise<void>
-  }
   preferences: {
     get(): Promise<UserPreferences>
     set(prefs: Partial<UserPreferences>): Promise<void>
@@ -445,7 +415,6 @@ export interface CreateTaskInput {
   priority?: Priority
   source: TaskSource
   projectIds?: string[]
-  relatedRelationIds?: string[]
   dueDate?: string
 }
 
@@ -455,21 +424,6 @@ export interface CreateProjectInput {
   repoPath?: string
   docsPath?: string
   techStack?: string
-  team?: string[]
-  notes?: string
-  source?: 'user' | 'agent'
-}
-
-export interface CreateRelationInput {
-  name: string
-  role: RelationRole
-  org?: string
-  title?: string
-  email?: string
-  teamsId?: string
-  timezone?: string
-  expertise?: string[]
-  communicationStyle?: string
   notes?: string
   source?: 'user' | 'agent'
 }

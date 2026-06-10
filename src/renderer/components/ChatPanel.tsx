@@ -1029,8 +1029,8 @@ function ActionCard({ action, onConfirm }: { action: PendingAction; onConfirm: (
       )
     }
 
-    // Project/Relation management
-    if (toolName.includes('manage_project') || toolName.includes('manage_relation')) {
+    // Project management
+    if (toolName.includes('manage_project')) {
       const entries = Object.entries(details).filter(([k]) => !['kind', 'id', 'action'].includes(k))
       const actionVal = d('action')
       return entries.length > 0 ? (
@@ -1123,9 +1123,7 @@ const TOOL_NAME_MAP: Record<string, string> = {
   update_aide_task: 'Update task',
   query_aide_tasks: 'Query tasks',
   query_projects: 'Query projects',
-  query_relations: 'Query contacts',
   manage_project: 'Manage project',
-  manage_relation: 'Manage contact',
   generate_report: 'Generate report',
   send_email_work_iq: 'Send email',
   reply_email_work_iq: 'Reply email',
