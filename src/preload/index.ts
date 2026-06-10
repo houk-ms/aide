@@ -121,7 +121,9 @@ const api: AideAPI = {
   files: {
     open: (taskId, ref) => ipcRenderer.invoke('files:open', taskId, ref),
     reveal: (taskId, ref) => ipcRenderer.invoke('files:reveal', taskId, ref),
-    exists: (taskId, ref) => ipcRenderer.invoke('files:exists', taskId, ref)
+    exists: (taskId, ref) => ipcRenderer.invoke('files:exists', taskId, ref),
+    list: (taskId) => ipcRenderer.invoke('files:list', taskId),
+    openFolder: (taskId) => ipcRenderer.invoke('files:openFolder', taskId)
   },
   system: {
     health: () => ipcRenderer.invoke('system:health')

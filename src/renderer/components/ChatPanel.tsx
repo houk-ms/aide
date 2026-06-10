@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download } from 'lucide-react'
+import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useChatStore, GENERAL_KEY } from '../stores/chatStore'
 import type { LiveStep } from '../stores/chatStore'
-import type { ChatMessage, ChatAttachment, PendingAction, ModelInfo, TaskActivity, TurnStep, Task } from '@shared/types'
+import type { ChatMessage, ChatAttachment, PendingAction, ModelInfo, TaskActivity, TurnStep, Task, ArtifactFile } from '@shared/types'
 
 // Stable empty reference so the per-session live selector doesn't return a new
 // array each render (which would thrash zustand's equality check).
@@ -274,11 +274,6 @@ export function ChatPanel() {
         </header>
       )}
 
-      {/* Task status — pinned above messages */}
-      {selectedTask && (
-        <TaskStatusBar task={selectedTask} />
-      )}
-
       {/* Messages */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto scrollbar-thin min-h-0">
         <div className="chat-content-width mx-auto px-6 py-6 space-y-5">
@@ -481,14 +476,47 @@ export function ChatPanel() {
 
 /* === Task Header === */
 
-function TaskHeader({ task, onBack }: {
-  task: { id: string; title: string; status: string; priority: string; description: string; source: { type: string; externalUrl?: string }; dueDate: string | null; relatedRelationIds: string[]; projectIds: string[]; lastActivityAt?: string | null }
-  onBack: () => void
-}) {
-  const { completeTask, cancelTask } = useTaskStore()
+/* === Task header — title + meta row with a right-aligned facet toolbar === */
+
+type Facet = 'state' | 'activity' | 'files' | null
+
+function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
   const sourceLabel: Record<string, string> = { email: 'Email', github: 'GitHub', teams: 'Teams', calendar: 'Calendar', user: 'Manual', agent: 'Agent' }
   const statusLabel: Record<string, string> = { pending: 'Pending', in_progress: 'In progress', completed: 'Completed', cancelled: 'Cancelled' }
-  const isOpen = task.status === 'pending' || task.status === 'in_progress'
+
+  // Facet toolbar lives on the right of the meta row; its body expands flush
+  // below the header. Counts come from the task's activity log + output files.
+  const [facet, setFacet] = useState<Facet>(null)
+  const [activities, setActivities] = useState<TaskActivity[]>([])
+  const [files, setFiles] = useState<ArtifactFile[]>([])
+  const [activitySeenAt, setActivitySeenAt] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    window.aide.tasks.listActivities(task.id).then(a => { if (alive) setActivities(a) }).catch(() => {})
+    window.aide.files.list(task.id).then(f => { if (alive) setFiles(f) }).catch(() => {})
+    return () => { alive = false }
+  }, [task.id, task.lastActivityAt])
+
+  // Last-seen activity marker, persisted per task so the unread dot survives restarts.
+  useEffect(() => {
+    setActivitySeenAt(localStorage.getItem(`aide:activitySeen:${task.id}`))
+  }, [task.id])
+
+  const hasState = !!task.workingState
+  const latestActivityAt = activities[0]?.timestamp ?? null
+  const activityUnread = !!latestActivityAt && latestActivityAt !== activitySeenAt && (!activitySeenAt || latestActivityAt > activitySeenAt)
+
+  // Mark Activity as seen whenever its panel is open — covers both opening it
+  // and new entries arriving live while it stays open.
+  useEffect(() => {
+    if (facet === 'activity' && latestActivityAt && latestActivityAt !== activitySeenAt) {
+      localStorage.setItem(`aide:activitySeen:${task.id}`, latestActivityAt)
+      setActivitySeenAt(latestActivityAt)
+    }
+  }, [facet, latestActivityAt, activitySeenAt, task.id])
+
+  const toggle = (f: Exclude<Facet, null>) => setFacet(cur => (cur === f ? null : f))
 
   return (
     <header className="shrink-0">
@@ -498,7 +526,9 @@ function TaskHeader({ task, onBack }: {
         </button>
         <h2 className="text-[13px] font-medium text-text-primary truncate flex-1 no-drag">{task.title}</h2>
       </div>
-      <div className="px-5 pb-2 flex items-center gap-2 text-[12px] text-text-tertiary flex-wrap">
+
+      {/* Meta row — left: task meta · right: facet toolbar */}
+      <div className="px-5 pb-2 flex items-center gap-x-2 gap-y-1 text-[12px] text-text-tertiary flex-wrap">
         <PriorityBadge priority={task.priority} />
         <span className="text-edge">·</span>
         <span>{sourceLabel[task.source.type] || task.source.type}</span>
@@ -515,84 +545,138 @@ function TaskHeader({ task, onBack }: {
             </span>
           </>
         )}
-        {isOpen && (
-          <div className="ml-auto flex items-center gap-1">
-            <button onClick={() => cancelTask(task.id)} className="h-6 px-2 rounded-md text-[12px] text-text-tertiary hover:text-danger hover:bg-danger/8 transition-colors flex items-center gap-1">
-              <X size={12} /> Cancel
-            </button>
-            <button onClick={() => completeTask(task.id)} className="h-6 px-2 rounded-md text-[12px] font-medium text-success hover:bg-success/10 transition-colors flex items-center gap-1">
-              <Check size={12} /> Done
-            </button>
-          </div>
-        )}
+
+        {/* Facet toolbar — fills the meta row's empty right side */}
+        <div className="ml-auto flex items-center gap-0.5 no-drag">
+          {hasState && (
+            <Segment icon={<FileText size={12.5} strokeWidth={2} />} label="State" active={facet === 'state'} onClick={() => toggle('state')} />
+          )}
+          {activities.length > 0 && (
+            <Segment icon={<Activity size={12.5} strokeWidth={2} />} label="Activity" count={activities.length} unread={activityUnread} active={facet === 'activity'} onClick={() => toggle('activity')} />
+          )}
+          {files.length > 0 && (
+            <Segment icon={<Files size={12.5} strokeWidth={2} />} label="Files" count={files.length} active={facet === 'files'} onClick={() => toggle('files')} />
+          )}
+        </div>
       </div>
+
+      {/* Expanded facet body — flush, capped height + scroll */}
+      {facet && (
+        <div className="border-t border-edge/60 bg-surface-1/40 max-h-[260px] overflow-y-auto scrollbar-thin anim-fade-in">
+          {facet === 'state' && (
+            <div className="px-5 py-3">
+              <div className="text-[12.5px] text-text-secondary leading-[1.65] whitespace-pre-wrap break-words select-text">
+                {task.workingState}
+              </div>
+            </div>
+          )}
+          {facet === 'activity' && <ActivityTimeline activities={activities} />}
+          {facet === 'files' && <FilesPanel taskId={task.id} files={files} />}
+        </div>
+      )}
+
       <div className="h-px bg-edge" />
     </header>
   )
 }
 
-/* === Task Status Bar — pinned section with working state + activity === */
-
-function TaskStatusBar({ task }: { task: Task }) {
-  const [stateExpanded, setStateExpanded] = useState(false)
-
+// A single segment in the task toolbar: small icon + label + optional count.
+// The active segment is softly tinted; counts are muted, never a filled bubble.
+// An accent dot appears when there's unread content (e.g. new activity).
+function Segment({ icon, label, count, unread, active, onClick }: {
+  icon: React.ReactNode
+  label: string
+  count?: number
+  unread?: boolean
+  active: boolean
+  onClick: () => void
+}) {
   return (
-    <div className="shrink-0 border-b border-edge">
-      <div className="chat-content-width mx-auto px-6 py-3 space-y-2">
-        {/* Working state card */}
-        {task.workingState && (
-          <div className="rounded-xl border border-edge bg-surface-1/50 overflow-hidden">
-            <button
-              onClick={() => setStateExpanded(v => !v)}
-              className="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-surface-2/50 transition-colors text-left"
-            >
-              <div className="w-6 h-6 rounded-md bg-surface-2 flex items-center justify-center shrink-0">
-                <FileText size={13} className="text-text-secondary" strokeWidth={2} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <span className="text-[12px] font-medium text-text-secondary">Current state</span>
-                {!stateExpanded && (
-                  <div className="text-[12px] text-text-tertiary truncate mt-0.5">
-                    {task.workingState.split('\n')[0]}
-                  </div>
-                )}
-              </div>
-              <div className="shrink-0 text-text-tertiary">
-                {stateExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </div>
-            </button>
-            {stateExpanded && (
-              <div className="px-4 pb-3 pt-0">
-                <div className="text-[12.5px] text-text-secondary leading-[1.6] whitespace-pre-wrap break-words select-text">
-                  {task.workingState}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] transition-colors ${
+        active ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2/70'
+      }`}
+    >
+      <span className={active ? 'text-accent' : 'text-text-tertiary'}>{icon}</span>
+      <span>{label}</span>
+      {count != null && count > 0 && (
+        <span className="tabular-nums text-[11px] text-text-tertiary/80">{count}</span>
+      )}
+      {unread && <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" aria-label="new" />}
+    </button>
+  )
+}
 
-        {/* Activity timeline */}
-        <TaskActivityPanel taskId={task.id} lastActivityAt={task.lastActivityAt} />
+/* === Files facet — browse everything a task produced === */
+
+function FilesPanel({ taskId, files }: { taskId: string | null; files: ArtifactFile[] }) {
+  if (files.length === 0) {
+    return (
+      <div className="px-4 py-5 text-center text-[12px] text-text-tertiary">
+        No files yet. Files the agent creates or you attach will appear here.
       </div>
+    )
+  }
+  return (
+    <div className="px-3 py-2">
+      {files.map(f => (
+        <div
+          key={f.name}
+          className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-2/60 transition-colors"
+        >
+          <button
+            onClick={() => window.aide.files.open(taskId, f.name)}
+            className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
+            title={`Open ${f.name}`}
+          >
+            <div className="w-7 h-7 rounded-md bg-surface-2 flex items-center justify-center shrink-0 text-text-secondary">
+              <FileGlyph name={f.name} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[12.5px] text-text-primary truncate group-hover:text-accent transition-colors">{f.name}</div>
+              <div className="text-[11px] text-text-tertiary tabular-nums">
+                {formatBytes(f.size)} · {formatActivityTime(f.modifiedAt)}
+              </div>
+            </div>
+          </button>
+          <button
+            onClick={() => window.aide.files.reveal(taskId, f.name)}
+            className="inline-flex items-center justify-center w-6 h-6 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0 opacity-0 group-hover:opacity-100"
+            title="Reveal in folder"
+          >
+            <FolderOpen size={12} />
+          </button>
+        </div>
+      ))}
     </div>
   )
 }
 
-/* === Task Activity Panel — prominent card at top of conversation === */
+// Pick a file-type glyph from the extension, reusing the attachment icon set.
+function FileGlyph({ name }: { name: string }) {
+  const kind = attachmentKind('', name)
+  const size = 14
+  switch (kind) {
+    case 'image': return <FileIcon size={size} />
+    case 'video': return <FileVideo size={size} />
+    case 'audio': return <FileAudio size={size} />
+    case 'archive': return <FileArchive size={size} />
+    case 'code': return <FileCode size={size} />
+    default: return <FileText size={size} />
+  }
+}
 
-function TaskActivityPanel({ taskId, lastActivityAt }: { taskId: string; lastActivityAt?: string | null }) {
-  const [activities, setActivities] = useState<TaskActivity[]>([])
-  const [expanded, setExpanded] = useState(false)
+/* === Activity timeline — facet body (was the standalone activity card) === */
 
-  useEffect(() => {
-    let alive = true
-    window.aide.tasks.listActivities(taskId).then(a => { if (alive) setActivities(a) })
-    return () => { alive = false }
-  }, [taskId, lastActivityAt])
-
-  if (activities.length === 0) return null
-
-  const latest = activities[0]
+function ActivityTimeline({ activities }: { activities: TaskActivity[] }) {
+  if (activities.length === 0) {
+    return (
+      <div className="px-4 py-5 text-center text-[12px] text-text-tertiary">
+        No activity yet.
+      </div>
+    )
+  }
   const typeMeta: Record<string, { label: string; dot: string; text: string }> = {
     progress: { label: 'Progress', dot: 'bg-accent', text: 'text-accent' },
     status_change: { label: 'Status', dot: 'bg-text-tertiary', text: 'text-text-secondary' },
@@ -600,62 +684,36 @@ function TaskActivityPanel({ taskId, lastActivityAt }: { taskId: string; lastAct
     comment: { label: 'Needs reply', dot: 'bg-success', text: 'text-success' },
     note: { label: 'Note', dot: 'bg-accent', text: 'text-accent' }
   }
-
   return (
-    <div className="rounded-xl border border-accent/25 bg-accent/[0.04] overflow-hidden">
-      <button
-        onClick={() => setExpanded(v => !v)}
-        className="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-accent/[0.06] transition-colors text-left"
-      >
-        <div className="w-6 h-6 rounded-md bg-accent/12 flex items-center justify-center shrink-0">
-          <Activity size={13} className="text-accent" strokeWidth={2} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[12px] font-semibold text-text-primary">Activity</span>
-            <span className="text-[11px] font-medium text-accent bg-accent/12 rounded-full px-1.5 py-[1px]">{activities.length}</span>
-          </div>
-          {!expanded && latest && (
-            <div className="text-[12px] text-text-secondary truncate mt-0.5">
-              Latest · {latest.summary}
-            </div>
-          )}
-        </div>
-        <div className="shrink-0 text-text-tertiary">
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="px-4 pb-3 pt-1">
-          <div className="relative pl-5">
-            <div className="absolute left-[5px] top-1.5 bottom-1.5 w-px bg-edge" />
-            <div className="space-y-3">
-              {activities.map(a => {
-                const m = typeMeta[a.type] || typeMeta.note
-                return (
-                  <div key={a.id} className="relative">
-                    <div className={`absolute -left-5 top-1 w-[11px] h-[11px] rounded-full ring-2 ring-surface-0 ${m.dot}`} />
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className={`text-[11px] font-medium ${m.text}`}>{m.label}</span>
-                      <span className="text-[11px] text-text-tertiary/70">{formatActivityTime(a.timestamp)}</span>
-                    </div>
-                    <div className="text-[12.5px] text-text-secondary leading-[1.55] break-words select-text">{a.summary}</div>
-                    {a.sourceRef && (
-                      <div className="inline-flex items-center mt-1 text-[10.5px] text-text-tertiary/70 bg-surface-1 border border-edge rounded px-1.5 py-[1px] font-mono max-w-full truncate">
-                        {a.sourceRef}
-                      </div>
-                    )}
+    <div className="px-5 py-3.5">
+      <div className="relative pl-5">
+        <div className="absolute left-[5px] top-1.5 bottom-1.5 w-px bg-edge" />
+        <div className="space-y-3">
+          {activities.map(a => {
+            const m = typeMeta[a.type] || typeMeta.note
+            return (
+              <div key={a.id} className="relative">
+                <div className={`absolute -left-5 top-1 w-[11px] h-[11px] rounded-full ring-2 ring-surface-0 ${m.dot}`} />
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className={`text-[11px] font-medium ${m.text}`}>{m.label}</span>
+                  <span className="text-[11px] text-text-tertiary/70">{formatActivityTime(a.timestamp)}</span>
+                </div>
+                <div className="text-[12.5px] text-text-secondary leading-[1.55] break-words select-text">{a.summary}</div>
+                {a.sourceRef && (
+                  <div className="inline-flex items-center mt-1 text-[10.5px] text-text-tertiary/70 bg-surface-1 border border-edge rounded px-1.5 py-[1px] font-mono max-w-full truncate">
+                    {a.sourceRef}
                   </div>
-                )
-              })}
-            </div>
-          </div>
+                )}
+              </div>
+            )
+          })}
         </div>
-      )}
+      </div>
     </div>
   )
 }
+
+/* === (removed) standalone Task Activity Panel — folded into TaskStatusBar === */
 
 function formatActivityTime(iso: string): string {
   const d = new Date(iso)

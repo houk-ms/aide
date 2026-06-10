@@ -16,7 +16,7 @@ import { listChannels, deliverTo } from '../channels'
 import { listSkills, getSkill, toggleSkill, deleteSkill } from '../skills'
 import { listSources, syncSource, syncAllSources, browseSkills, installFromMarketplace } from '../skills/sources'
 import { getUpdateState, checkForUpdates, downloadUpdate, quitAndInstall } from '../updater'
-import { openArtifact, revealArtifact, artifactExists } from '../files'
+import { openArtifact, revealArtifact, artifactExists, listArtifacts, revealArtifactsFolder } from '../files'
 import { sdkHealth, sdkError } from '../health'
 
 export function registerIpcHandlers(): void {
@@ -153,6 +153,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('files:open', (_, taskId, ref) => openArtifact(taskId, ref))
   ipcMain.handle('files:reveal', (_, taskId, ref) => revealArtifact(taskId, ref))
   ipcMain.handle('files:exists', (_, taskId, ref) => artifactExists(taskId, ref))
+  ipcMain.handle('files:list', (_, taskId) => listArtifacts(taskId))
+  ipcMain.handle('files:openFolder', (_, taskId) => revealArtifactsFolder(taskId))
 
   // === System health ===
   ipcMain.handle('system:health', () => ({ sdk: sdkHealth, sdkError }))

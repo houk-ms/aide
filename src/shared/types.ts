@@ -277,6 +277,14 @@ export interface ChannelStatusInfo {
   lastError: string | null
 }
 
+// A file in a task's artifact folder (~/.copilot/session-state/{id}/files).
+// Surfaced in the task panel so users can browse everything a task produced.
+export interface ArtifactFile {
+  name: string
+  size: number
+  modifiedAt: string
+}
+
 // === IPC API ===
 
 export interface AideAPI {
@@ -399,6 +407,8 @@ export interface AideAPI {
     open(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
     reveal(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
     exists(taskId: string | null, ref: string): Promise<boolean>
+    list(taskId: string | null): Promise<ArtifactFile[]>
+    openFolder(taskId: string | null): Promise<{ ok: boolean; error?: string }>
   }
   system: {
     health(): Promise<{ sdk: 'initializing' | 'ready' | 'error'; sdkError: string | null }>
