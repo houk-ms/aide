@@ -38,13 +38,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      # Rebuild native modules for Electron
-      # Only rebuild better-sqlite3 (has prebuilds). Skip bufferutil/utf-8-validate
-      # which are optional ws deps that need VS compilation (node-gyp doesn't support VS 2026)
-      - name: Rebuild native modules
-        run: npx @electron/rebuild --only better-sqlite3
+        run: npm ci
 
       - name: Download Playwright browser
         run: npx playwright install chromium
