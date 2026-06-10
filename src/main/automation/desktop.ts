@@ -336,6 +336,18 @@ export async function takeScreenshot(): Promise<string> {
 }
 
 /**
+ * Take a screenshot of the entire screen and return as PNG buffer.
+ * Returns { buffer, width, height } for sending to the agent.
+ */
+export async function takeScreenshotBuffer(): Promise<{ buffer: Buffer; width: number; height: number }> {
+  const { screen } = getNutJs()
+  const image = await screen.grab()
+  const { data, width, height } = image
+  const pngBuffer = encodeRawBgraToPng(data, width, height)
+  return { buffer: pngBuffer, width, height }
+}
+
+/**
  * Encode raw BGRA buffer to PNG format.
  * nut.js returns BGRA on Windows, so we convert to RGBA for PNG.
  */
@@ -594,4 +606,34 @@ export async function takeWindowScreenshot(titleQuery: string): Promise<{ filePa
   fs.writeFileSync(filePath, pngBuffer)
   
   return { filePath, bounds: windowInfo.bounds }
+}
+
+/**
+ * Take a screenshot of a specific window and return as PNG buffer.
+ * Returns { buffer, bounds } for sending to the agent.
+ */
+export async function takeWindowScreenshotBuffer(titleQuery: string): Promise<{ buffer: Buffer; bounds: WindowInfo['bounds']; title: string } | null> {
+  const nutjs = getNutJs()
+  const windowInfo = await getWindowBounds(titleQuery)
+  
+  if (!windowInfo) {
+    return null
+  }
+  
+  // Focus the window first so it's visible
+  await focusWindow(titleQuery)
+  await wait(200) // Wait for window to be fully visible
+  
+  // Grab just the window region
+  const image = await nutjs.screen.grabRegion({
+    left: windowInfo.bounds.left,
+    top: windowInfo.bounds.top,
+    width: windowInfo.bounds.width,
+    height: windowInfo.bounds.height
+  })
+  
+  // Encode BGRA to PNG
+  const pngBuffer = encodeRawBgraToPng(image.data, image.width, image.height)
+  
+  return { buffer: pngBuffer, bounds: windowInfo.bounds, title: windowInfo.title }
 }
