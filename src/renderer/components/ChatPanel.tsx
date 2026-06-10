@@ -6,7 +6,7 @@ import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Pape
 import { useTaskStore } from '../stores/taskStore'
 import { useChatStore, GENERAL_KEY } from '../stores/chatStore'
 import type { LiveStep } from '../stores/chatStore'
-import type { ChatMessage, ChatAttachment, PendingAction, ModelInfo, TaskActivity, TurnStep, Task, ArtifactFile } from '@shared/types'
+import type { ChatMessage, ChatAttachment, PendingAction, ModelInfo, TaskActivity, TurnStep, Task, ArtifactFile, ReasoningEffort, ReasoningEffortPreference, ContextTier } from '@shared/types'
 
 // Stable empty reference so the per-session live selector doesn't return a new
 // array each render (which would thrash zustand's equality check).
@@ -114,6 +114,8 @@ export function ChatPanel() {
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelInfo[]>([])
   const [selectedModel, setSelectedModel] = useState('')
+  const [effort, setEffort] = useState<ReasoningEffortPreference | null>(null)
+  const [contextTier, setContextTier] = useState<ContextTier>('default')
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [showOtherModels, setShowOtherModels] = useState(false)
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -167,6 +169,19 @@ export function ChatPanel() {
     window.aide.models.getSelected().then(s => { console.log('[SelectedModel]', s); setSelectedModel(s) })
   }, [])
 
+  // Reasoning effort and context tier are both per-model: reload whenever the
+  // active model changes so the controls reflect that model's saved settings
+  // (effort falls back to the model default; tier falls back to default).
+  useEffect(() => {
+    if (!selectedModel) return
+    let alive = true
+    setEffort(null)
+    setContextTier('default')
+    window.aide.models.getEffort(selectedModel).then(e => { if (alive) setEffort(e) })
+    window.aide.models.getContextTier(selectedModel).then(t => { if (alive) setContextTier(t) })
+    return () => { alive = false }
+  }, [selectedModel])
+
   useEffect(() => {
     if (selectedTaskId && !triggeredTasksRef.current.has(selectedTaskId)) {
       triggeredTasksRef.current.add(selectedTaskId)
@@ -199,6 +214,18 @@ export function ChatPanel() {
     setShowModelPicker(false)
     window.aide.models.setSelected(modelId)
   }, [])
+
+  const handleEffortSelect = useCallback((e: ReasoningEffortPreference) => {
+    if (!selectedModel) return
+    setEffort(e)
+    window.aide.models.setEffort(selectedModel, e)
+  }, [selectedModel])
+
+  const handleContextTierSelect = useCallback((t: ContextTier) => {
+    if (!selectedModel) return
+    setContextTier(t)
+    window.aide.models.setContextTier(selectedModel, t)
+  }, [selectedModel])
 
   const handleFileSelect = useCallback((files: FileList | null) => {
     if (!files) return
@@ -446,6 +473,15 @@ export function ChatPanel() {
                     </>
                   )}
                 </div>
+
+                {/* Thinking effort & context window */}
+                <ModelTuning
+                  model={models.find(m => m.id === selectedModel)}
+                  effort={effort}
+                  contextTier={contextTier}
+                  onEffort={handleEffortSelect}
+                  onContextTier={handleContextTierSelect}
+                />
               </div>
 
               {/* Send / Stop button */}
@@ -476,6 +512,136 @@ export function ChatPanel() {
 
 /* === Task Header === */
 
+/* === Composer model tuning — thinking effort + context window === */
+
+const EFFORT_LABELS: Record<ReasoningEffort, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Xhigh', max: 'Max' }
+type EffortOption = ReasoningEffortPreference
+const EFFORT_DESCRIPTIONS: Record<EffortOption, string> = {
+  none: 'No reasoning applied',
+  low: 'Faster responses with less reasoning',
+  medium: 'Balanced reasoning and speed',
+  high: 'Greater reasoning depth but slower',
+  xhigh: 'Highest reasoning depth but slowest',
+  max: 'Absolute maximum capability with no constraints'
+}
+
+// Safe label for any effort preference, including unknown values the SDK might
+// report that we don't have a friendly name for.
+function effortLabelOf(e: EffortOption): string {
+  if (e === 'none') return 'None'
+  return EFFORT_LABELS[e] ?? e
+}
+
+// Format a token count the way model cards do: 1,000,000 -> "1M", 272,000 ->
+// "272K". Returns null when the count is missing so callers can fall back.
+function formatTokens(tokens?: number): string | null {
+  if (!tokens || tokens <= 0) return null
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000
+    return `${Number.isInteger(m) ? m : m.toFixed(1).replace(/\.0$/, '')}M`
+  }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`
+  return `${tokens}`
+}
+
+// Sits beside the model picker in the composer, expanded like GitHub Copilot:
+// model name, effort, and context size are separate horizontal chips.
+function ModelTuning({ model, effort, contextTier, onEffort, onContextTier }: {
+  model?: ModelInfo
+  effort: ReasoningEffortPreference | null
+  contextTier: ContextTier
+  onEffort: (e: ReasoningEffortPreference) => void
+  onContextTier: (t: ContextTier) => void
+}) {
+  const [open, setOpen] = useState<'effort' | 'context' | null>(null)
+  // Effort options come straight from the model — never fabricate levels or
+  // prepend None unless the model explicitly advertises it.
+  const supportsEffort = !!model?.supportsReasoningEffort
+  const effortValues = supportsEffort ? (model?.supportedReasoningEfforts ?? []) : []
+  const effortOptions: EffortOption[] = effortValues
+  const defaultEffort = model?.defaultReasoningEffort
+  const fallbackEffort: EffortOption = (defaultEffort && effortOptions.includes(defaultEffort) ? defaultEffort : effortOptions[0]) ?? 'none'
+  const rawEffort: EffortOption = effort ?? defaultEffort ?? fallbackEffort
+  // Never surface an effort the current model can't actually use.
+  const currentEffort: EffortOption = effortOptions.includes(rawEffort) ? rawEffort : fallbackEffort
+  // Long context is a per-model capability: only models that advertise a long
+  // tier get a context chip, with each tier's real window size.
+  const supportsLong = !!model?.supportsLongContext
+  const defaultLabel = formatTokens(model?.maxContextWindowTokens)
+  const longLabel = formatTokens(model?.longContextWindowTokens)
+  const contextLabel = contextTier === 'long_context' ? (longLabel ?? 'Long') : (defaultLabel ?? 'Default')
+
+  return (
+    <div className="flex items-center gap-1 min-w-0">
+      {open && <div className="fixed inset-0 z-40" onClick={() => setOpen(null)} />}
+      {effortOptions.length > 0 && (
+        <div className="relative">
+          <button
+            onClick={() => setOpen(open === 'effort' ? null : 'effort')}
+            className="h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors"
+            title="Thinking effort"
+          >
+            <span>{effortLabelOf(currentEffort)}</span>
+            <ChevronDown size={11} />
+          </button>
+          {open === 'effort' && (
+            <div className="absolute bottom-full left-0 mb-1.5 bg-surface-0 border border-edge rounded-xl shadow-lg p-2 w-[390px] max-w-[calc(100vw-32px)] z-50 anim-fade-in">
+              <div className="px-1.5 pb-1.5 text-[12px] font-semibold text-text-tertiary">Thinking Effort</div>
+              {effortOptions.map(e => {
+                const selected = e === currentEffort
+                const label = `${effortLabelOf(e)}${e !== 'none' && e === defaultEffort ? ' (default)' : ''}`
+                return (
+                <button
+                  key={e}
+                  onClick={() => { onEffort(e); setOpen(null) }}
+                  className={`w-full px-2 py-1.5 rounded-lg text-left text-[13px] transition-colors grid grid-cols-[20px_1fr_auto] items-center gap-2 ${selected ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'}`}
+                >
+                  <span className="w-4 text-accent">{selected && <Check size={14} />}</span>
+                  <span>{label}</span>
+                  <span className="text-[12px] text-text-tertiary whitespace-nowrap">{EFFORT_DESCRIPTIONS[e]}</span>
+                </button>
+              )})}
+              <div className="mt-1.5 px-2 pt-1.5 border-t border-edge text-[12px] text-text-tertiary">Higher levels of thinking may increase costs</div>
+            </div>
+          )}
+        </div>
+      )}
+      {supportsLong && (
+        <div className="relative">
+          <button
+            onClick={() => setOpen(open === 'context' ? null : 'context')}
+            className="h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors tabular-nums"
+            title="Context window"
+          >
+            <span>{contextLabel}</span>
+            <ChevronDown size={11} />
+          </button>
+          {open === 'context' && (
+            <div className="absolute bottom-full left-0 mb-1.5 bg-surface-0 border border-edge rounded-xl shadow-lg p-2 w-[220px] z-50 anim-fade-in">
+              <div className="px-1.5 pb-1.5 text-[12px] font-semibold text-text-tertiary">Context Size</div>
+              {[
+                { tier: 'default' as ContextTier, label: 'Default', detail: defaultLabel ? `${defaultLabel} tokens` : 'Standard window' },
+                { tier: 'long_context' as ContextTier, label: 'Long context', detail: longLabel ? `${longLabel} tokens` : 'Extended window' }
+              ].map(o => (
+                <button
+                  key={o.tier}
+                  onClick={() => { onContextTier(o.tier); setOpen(null) }}
+                  className={`w-full px-2 py-1.5 rounded-lg text-left text-[13px] transition-colors grid grid-cols-[20px_1fr_auto] items-center gap-2 ${o.tier === contextTier ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'}`}
+                >
+                  <span className="w-4 text-accent">{o.tier === contextTier && <Check size={14} />}</span>
+                  <span>{o.label}</span>
+                  <span className="text-[12px] text-text-tertiary whitespace-nowrap tabular-nums">{o.detail}</span>
+                </button>
+              ))}
+              <div className="mt-1.5 px-2 pt-1.5 border-t border-edge text-[12px] text-text-tertiary leading-snug">Larger context may increase cost</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* === Task header — title + meta row with a right-aligned facet toolbar === */
 
 type Facet = 'state' | 'activity' | 'files' | null
@@ -490,6 +656,7 @@ function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
   const [activities, setActivities] = useState<TaskActivity[]>([])
   const [files, setFiles] = useState<ArtifactFile[]>([])
   const [activitySeenAt, setActivitySeenAt] = useState<string | null>(null)
+  const [filesSeenAt, setFilesSeenAt] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -498,14 +665,17 @@ function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
     return () => { alive = false }
   }, [task.id, task.lastActivityAt])
 
-  // Last-seen activity marker, persisted per task so the unread dot survives restarts.
+  // Last-seen markers, persisted per task so the unread dot survives restarts.
   useEffect(() => {
     setActivitySeenAt(localStorage.getItem(`aide:activitySeen:${task.id}`))
+    setFilesSeenAt(localStorage.getItem(`aide:filesSeen:${task.id}`))
   }, [task.id])
 
   const hasState = !!task.workingState
   const latestActivityAt = activities[0]?.timestamp ?? null
   const activityUnread = !!latestActivityAt && latestActivityAt !== activitySeenAt && (!activitySeenAt || latestActivityAt > activitySeenAt)
+  const latestFileAt = files[0]?.modifiedAt ?? null
+  const filesUnread = !!latestFileAt && latestFileAt !== filesSeenAt && (!filesSeenAt || latestFileAt > filesSeenAt)
 
   // Mark Activity as seen whenever its panel is open — covers both opening it
   // and new entries arriving live while it stays open.
@@ -515,6 +685,14 @@ function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
       setActivitySeenAt(latestActivityAt)
     }
   }, [facet, latestActivityAt, activitySeenAt, task.id])
+
+  // Same for Files — opening the panel clears the unread dot.
+  useEffect(() => {
+    if (facet === 'files' && latestFileAt && latestFileAt !== filesSeenAt) {
+      localStorage.setItem(`aide:filesSeen:${task.id}`, latestFileAt)
+      setFilesSeenAt(latestFileAt)
+    }
+  }, [facet, latestFileAt, filesSeenAt, task.id])
 
   const toggle = (f: Exclude<Facet, null>) => setFacet(cur => (cur === f ? null : f))
 
@@ -555,7 +733,7 @@ function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
             <Segment icon={<Activity size={12.5} strokeWidth={2} />} label="Activity" count={activities.length} unread={activityUnread} active={facet === 'activity'} onClick={() => toggle('activity')} />
           )}
           {files.length > 0 && (
-            <Segment icon={<Files size={12.5} strokeWidth={2} />} label="Files" count={files.length} active={facet === 'files'} onClick={() => toggle('files')} />
+            <Segment icon={<Files size={12.5} strokeWidth={2} />} label="Files" count={files.length} unread={filesUnread} active={facet === 'files'} onClick={() => toggle('files')} />
           )}
         </div>
       </div>

@@ -23,7 +23,11 @@ const api: AideAPI = {
   models: {
     list: () => ipcRenderer.invoke('models:list'),
     getSelected: () => ipcRenderer.invoke('models:getSelected'),
-    setSelected: (modelId) => ipcRenderer.invoke('models:setSelected', modelId)
+    setSelected: (modelId) => ipcRenderer.invoke('models:setSelected', modelId),
+    getEffort: (modelId) => ipcRenderer.invoke('models:getEffort', modelId),
+    setEffort: (modelId, effort) => ipcRenderer.invoke('models:setEffort', modelId, effort),
+    getContextTier: (modelId) => ipcRenderer.invoke('models:getContextTier', modelId),
+    setContextTier: (modelId, tier) => ipcRenderer.invoke('models:setContextTier', modelId, tier)
   },
   memory: {
     getL0: () => ipcRenderer.invoke('memory:getL0'),

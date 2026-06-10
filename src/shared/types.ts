@@ -184,9 +184,25 @@ export interface BrowsableSkill {
 
 // === Models ===
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ReasoningEffortPreference = 'none' | ReasoningEffort
+export type ContextTier = 'default' | 'long_context'
+
 export interface ModelInfo {
   id: string
   name: string
+  /** Whether this model supports a configurable reasoning-effort level. */
+  supportsReasoningEffort?: boolean
+  /** Reasoning-effort menu options this model accepts (only when supported). */
+  supportedReasoningEfforts?: ReasoningEffortPreference[]
+  /** The model's default reasoning-effort option (only when supported). */
+  defaultReasoningEffort?: ReasoningEffortPreference
+  /** Default-tier context-window size in tokens, when reported by the runtime. */
+  maxContextWindowTokens?: number
+  /** Whether this model offers a long-context tier (per-model capability). */
+  supportsLongContext?: boolean
+  /** Long-context-tier window size in tokens (only when supportsLongContext). */
+  longContextWindowTokens?: number
 }
 
 // === Connection ===
@@ -286,6 +302,10 @@ export interface AideAPI {
     list(): Promise<ModelInfo[]>
     getSelected(): Promise<string>
     setSelected(modelId: string): Promise<void>
+    getEffort(modelId: string): Promise<ReasoningEffortPreference | null>
+    setEffort(modelId: string, effort: ReasoningEffortPreference | null): Promise<void>
+    getContextTier(modelId: string): Promise<ContextTier>
+    setContextTier(modelId: string, tier: ContextTier): Promise<void>
   }
   memory: {
     getL0(): Promise<string>

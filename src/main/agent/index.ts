@@ -6,11 +6,11 @@ import { getConnectionStatus } from '../connections'
 import { getSkillsDirectory } from '../skills'
 import { saveChatAttachment } from '../files'
 import { showSystemNotification } from '../index'
-import type { ChatMessage, Task, PendingAction, TurnStep } from '@shared/types'
+import type { ChatMessage, Task, PendingAction, TurnStep, ModelInfo, ReasoningEffort, ReasoningEffortPreference, ContextTier } from '@shared/types'
 import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
 import { BrowserWindow } from 'electron'
-import type { CopilotClient, CopilotSession } from '@github/copilot-sdk'
+import type { CopilotClient, CopilotSession, ModelInfo as SdkModelInfo } from '@github/copilot-sdk'
 import type { SessionConfig, PermissionRequest, PermissionRequestResult } from '@github/copilot-sdk'
 import { buildTools } from './tools'
 import { sdkError } from '../health'
@@ -442,37 +442,211 @@ Be restrained. Quality over quantity.
 - When entering a Task chat → briefly state the task's background, status, and suggested handling`
 }
 
-// === Model Selection (persisted to DB) ===
+// === Model Selection & tuning (persisted to DB) ===
 
 let selectedModel: string | null = null
+let sdkModelsCache: SdkModelInfo[] | null = null
 
-export async function listModels(): Promise<{ id: string; name: string }[]> {
-  if (!client) return [{ id: 'claude-opus-4.8', name: 'Claude Opus 4.8' }]
+const DEFAULT_MODEL = 'claude-opus-4.8'
+const REASONING_EFFORT_OPTIONS: ReasoningEffortPreference[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+const REASONING_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max'
+}
+
+function isReasoningEffortPreference(value: unknown): value is ReasoningEffortPreference {
+  return value === 'none' || isReasoningEffort(value)
+}
+
+function normalizeReasoningEffort(value: unknown): ReasoningEffortPreference | undefined {
+  return isReasoningEffortPreference(value) ? value : undefined
+}
+
+function normalizeReasoningEfforts(values: unknown): ReasoningEffortPreference[] | undefined {
+  if (!Array.isArray(values)) return undefined
+  const set = new Set(values.filter(isReasoningEffortPreference))
+  const normalized = REASONING_EFFORT_OPTIONS.filter(e => set.has(e))
+  return normalized.length > 0 ? normalized : undefined
+}
+
+// Derive per-tier context-window sizes from a model's billing/limits. The SDK
+// reports prompt-token budgets per tier (tokenPrices.contextMax for default,
+// tokenPrices.longContext.contextMax for the long tier); the full window adds
+// max_output_tokens. A long tier is only present for models that support it,
+// so its absence is the per-model "no long context" signal.
+//
+// listModels() passes the raw wire model through, so these fields exist at
+// runtime even though the public ModelInfo type narrows them away — read them
+// through a local shape rather than relying on the trimmed public type.
+interface SdkModelWire {
+  capabilities?: { limits?: { max_output_tokens?: number; max_context_window_tokens?: number } }
+  billing?: { tokenPrices?: { contextMax?: number; longContext?: { contextMax?: number } } }
+  supportedReasoningEfforts?: unknown
+  defaultReasoningEffort?: unknown
+}
+
+function contextWindowsOf(m: SdkModelInfo): { defaultWindow?: number; longWindow?: number; supportsLong: boolean } {
+  const wire = m as SdkModelWire
+  const limits = wire.capabilities?.limits
+  const prices = wire.billing?.tokenPrices
+  const maxOutput = limits?.max_output_tokens ?? 0
+  const longBudget = prices?.longContext?.contextMax
+  const defaultBudget = prices?.contextMax
+  const defaultWindow = defaultBudget != null ? defaultBudget + maxOutput : (limits?.max_context_window_tokens || undefined)
+  const longWindow = longBudget != null ? longBudget + maxOutput : undefined
+  return { defaultWindow, longWindow, supportsLong: longWindow != null }
+}
+
+// Fetch the SDK model list once and cache it. Capabilities (reasoning-effort
+// support, supported levels, context window) drive both the picker UI and the
+// per-session tuning attached in getOrCreateSession. The list is static for a
+// run, so a single fetch is enough.
+async function getSdkModels(): Promise<SdkModelInfo[]> {
+  if (!client) return []
+  if (sdkModelsCache) return sdkModelsCache
   try {
-    const models = await client.listModels()
-    return models.map(m => ({ id: m.id, name: m.name }))
+    sdkModelsCache = await client.listModels()
   } catch {
-    return [{ id: 'claude-opus-4.8', name: 'Claude Opus 4.8' }]
+    sdkModelsCache = []
   }
+  return sdkModelsCache
+}
+
+export async function listModels(): Promise<ModelInfo[]> {
+  const models = await getSdkModels()
+  if (models.length === 0) return [{ id: DEFAULT_MODEL, name: 'Claude Opus 4.8' }]
+  return models.map(m => {
+    const wire = m as SdkModelWire
+    const ctx = contextWindowsOf(m)
+    return {
+      id: m.id,
+      name: m.name,
+      supportsReasoningEffort: m.capabilities?.supports?.reasoningEffort ?? false,
+      supportedReasoningEfforts: normalizeReasoningEfforts(wire.supportedReasoningEfforts),
+      defaultReasoningEffort: normalizeReasoningEffort(wire.defaultReasoningEffort),
+      maxContextWindowTokens: ctx.defaultWindow,
+      supportsLongContext: ctx.supportsLong,
+      longContextWindowTokens: ctx.longWindow
+    }
+  })
 }
 
 export function getSelectedModel(): string {
   if (!selectedModel) {
     const db = getDb()
     const row = db.prepare("SELECT content FROM memory_entries WHERE id = '__selected_model'").get() as { content: string } | undefined
-    selectedModel = row?.content || 'claude-opus-4.8'
+    selectedModel = row?.content || DEFAULT_MODEL
   }
   return selectedModel
 }
 
 export function setSelectedModel(modelId: string): void {
   selectedModel = modelId
-  const db = getDb()
+  writeSetting('__selected_model', modelId)
+}
+
+// Reasoning effort is stored per model — each model remembers its own level.
+// A missing entry falls back to the model default; "none" explicitly omits
+// reasoningEffort from the session config.
+// One JSON row keeps it compact instead of a row per model.
+type StoredReasoningEffort = ReasoningEffortPreference
+let effortMap: Record<string, StoredReasoningEffort> | null = null
+
+function loadEffortMap(): Record<string, StoredReasoningEffort> {
+  if (!effortMap) {
+    const row = getDb().prepare("SELECT content FROM memory_entries WHERE id = '__reasoning_effort'").get() as { content: string } | undefined
+    try {
+      const parsed = row ? JSON.parse(row.content) as Record<string, unknown> : {}
+      effortMap = Object.fromEntries(
+        Object.entries(parsed)
+          .map(([modelId, value]) => [modelId, value === null ? 'none' : value] as const)
+          .filter((entry): entry is readonly [string, StoredReasoningEffort] => isReasoningEffortPreference(entry[1]))
+      )
+    } catch {
+      effortMap = {}
+    }
+  }
+  return effortMap ?? {}
+}
+
+export function getReasoningEffort(modelId: string): ReasoningEffortPreference | null {
+  return loadEffortMap()[modelId] ?? null
+}
+
+export function setReasoningEffort(modelId: string, effort: ReasoningEffortPreference | null): void {
+  const map = loadEffortMap()
+  if (effort) map[modelId] = effort
+  else delete map[modelId]
+  writeSetting('__reasoning_effort', JSON.stringify(map))
+}
+
+// Context tier is stored per model — each model remembers its own tier. Only
+// models with a long-context variant ever store 'long_context'; a missing
+// entry means the default tier. One JSON row keeps it compact.
+let contextTierMap: Record<string, ContextTier> | null = null
+
+function isContextTier(value: unknown): value is ContextTier {
+  return value === 'default' || value === 'long_context'
+}
+
+function loadContextTierMap(): Record<string, ContextTier> {
+  if (!contextTierMap) {
+    const row = getDb().prepare("SELECT content FROM memory_entries WHERE id = '__context_tier'").get() as { content: string } | undefined
+    try {
+      // Legacy format was a bare tier string (global); JSON.parse throws on it,
+      // so it migrates cleanly to an empty per-model map (everyone defaults).
+      const parsed = row ? JSON.parse(row.content) as Record<string, unknown> : {}
+      contextTierMap = Object.fromEntries(
+        Object.entries(parsed).filter((entry): entry is [string, ContextTier] => isContextTier(entry[1]))
+      )
+    } catch {
+      contextTierMap = {}
+    }
+  }
+  return contextTierMap ?? {}
+}
+
+export function getContextTier(modelId: string): ContextTier {
+  return loadContextTierMap()[modelId] ?? 'default'
+}
+
+export function setContextTier(modelId: string, tier: ContextTier): void {
+  const map = loadContextTierMap()
+  if (tier === 'long_context') map[modelId] = tier
+  else delete map[modelId]
+  writeSetting('__context_tier', JSON.stringify(map))
+}
+
+// Upsert a single system-scoped setting row in the memory table.
+function writeSetting(id: string, content: string): void {
   const now = new Date().toISOString()
-  db.prepare(`
+  getDb().prepare(`
     INSERT OR REPLACE INTO memory_entries (id, layer, content, source, status, created_at, updated_at, tags)
-    VALUES ('__selected_model', 'L0', ?, 'system', 'active', ?, ?, '[]')
-  `).run(modelId, now, now)
+    VALUES (?, 'L0', ?, 'system', 'active', ?, ?, '[]')
+  `).run(id, content, now, now)
+}
+
+// Resolve the per-session tuning for the selected model. Reasoning effort is
+// only attached when the model supports it and the resolved level is one it
+// accepts — the runtime rejects an unsupported effort. Context tier is only
+// attached when the model actually offers a long-context variant and the user
+// has opted into it for that model.
+async function resolveSessionTuning(modelId: string): Promise<{ reasoningEffort?: ReasoningEffort; contextTier?: ContextTier }> {
+  const out: { reasoningEffort?: ReasoningEffort; contextTier?: ContextTier } = {}
+  const info = (await getSdkModels()).find(m => m.id === modelId)
+  if (info?.capabilities?.supports?.reasoningEffort) {
+    const wire = info as SdkModelWire
+    const map = loadEffortMap()
+    const hasStoredEffort = Object.prototype.hasOwnProperty.call(map, modelId)
+    const resolved = hasStoredEffort ? map[modelId] : normalizeReasoningEffort(wire.defaultReasoningEffort)
+    const allowed = normalizeReasoningEfforts(wire.supportedReasoningEfforts)
+    if (resolved && resolved !== 'none' && (!allowed || allowed.includes(resolved))) out.reasoningEffort = resolved
+  }
+  if (info && contextWindowsOf(info).supportsLong && getContextTier(modelId) === 'long_context') {
+    out.contextTier = 'long_context'
+  }
+  return out
 }
 
 // === Core API: send message ===
@@ -481,9 +655,10 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
   if (!client) throw sdkUnavailableError()
 
   const sessionId = taskId ? getTaskSessionId(taskId) : 'general'
+  const model = getSelectedModel()
   const config: SessionConfig = {
     sessionId,
-    model: getSelectedModel(),
+    model,
     streaming: true,
     tools: buildTools(),
     hooks,
@@ -492,6 +667,8 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
     onPermissionRequest: handlePermissionRequest,
     skillDirectories: [getSkillsDirectory()]
   }
+  // Attach reasoning-effort / context-tier when valid for the selected model.
+  Object.assign(config, await resolveSessionTuning(model))
 
   try {
     return await client.resumeSession(sessionId, config)
