@@ -79,7 +79,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       role: 'user',
       content: message,
       timestamp: new Date().toISOString(),
-      taskId
+      taskId,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined
     }
     set(state => ({
       messages: [...state.messages, userMsg],

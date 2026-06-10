@@ -36,7 +36,7 @@ export function OnboardingWizard({ onComplete }: Props) {
 
   const finish = useCallback(async () => {
     await window.aide.preferences.set({ onboardingComplete: true })
-    // Trigger world-sync immediately to bootstrap relations & projects
+    // Trigger world-sync immediately to bootstrap projects
     window.aide.jobs.run('world-sync').catch(() => {})
     onComplete()
   }, [onComplete])

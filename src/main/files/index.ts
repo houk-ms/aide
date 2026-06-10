@@ -1,6 +1,6 @@
 import { shell } from 'electron'
 import { homedir } from 'node:os'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, statSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 
 // Agent-created files ("artifacts") live in the Copilot CLI session-state
@@ -58,4 +58,97 @@ export function revealArtifact(taskId: string | null, ref: string): ArtifactResu
 // dead link.
 export function artifactExists(taskId: string | null, ref: string): boolean {
   return resolveArtifact(taskId, ref) !== null
+}
+
+// A single file living in a task's artifact folder, surfaced in the task panel
+// so the user can browse everything the agent (and their own attachments)
+// produced without scrolling back through the conversation.
+export type ArtifactFile = { name: string; size: number; modifiedAt: string }
+
+// List every regular file in a task's session-state files folder, newest
+// first. Hidden dotfiles are skipped (internal bookkeeping, never user-facing).
+// Returns an empty list when the folder doesn't exist yet (no artifacts).
+export function listArtifacts(taskId: string | null): ArtifactFile[] {
+  const filesDir = path.join(SESSION_STATE_ROOT, sessionIdForTask(taskId), 'files')
+  if (!existsSync(filesDir)) return []
+  let entries: string[]
+  try {
+    entries = readdirSync(filesDir)
+  } catch {
+    return []
+  }
+  const out: ArtifactFile[] = []
+  for (const name of entries) {
+    if (name.startsWith('.')) continue
+    try {
+      const st = statSync(path.join(filesDir, name))
+      if (!st.isFile()) continue
+      out.push({ name, size: st.size, modifiedAt: st.mtime.toISOString() })
+    } catch {
+      // Skip entries that vanish or can't be stat'd between readdir and now.
+    }
+  }
+  out.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
+  return out
+}
+
+// Open the task's artifact folder itself in the OS file manager — the single
+// entry point to everything a task produced. Creates the folder on demand so
+// the action never dead-ends, even before the first artifact is written.
+export async function revealArtifactsFolder(taskId: string | null): Promise<ArtifactResult> {
+  const filesDir = path.join(SESSION_STATE_ROOT, sessionIdForTask(taskId), 'files')
+  try {
+    mkdirSync(filesDir, { recursive: true })
+    const err = await shell.openPath(filesDir) // returns '' on success
+    return err ? { ok: false, error: err } : { ok: true }
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Failed to open folder' }
+  }
+}
+
+// Reduce an arbitrary user filename to a safe basename: strip directory parts,
+// allow only a conservative character set, and never let it start with a dot
+// (which would hide it or, when empty, resolve to the dir itself).
+function sanitizeFilename(name: string): string {
+  const base = path.basename((name || 'attachment').replace(/\\/g, '/').trim())
+  const cleaned = base.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '')
+  return cleaned || 'attachment'
+}
+
+// Persist a user-attached chat file into the session sandbox
+//   ~/.copilot/session-state/{sessionId}/files/{name}
+// so the agent can open it with its native file tools (instead of receiving an
+// unreadable base64 blob inlined in the prompt). Returns the absolute path plus
+// a sandbox-relative "files/{name}", or null if the data URL is malformed.
+export function saveChatAttachment(
+  taskId: string | null,
+  name: string,
+  dataUrl: string
+): { absPath: string; relPath: string } | null {
+  const comma = dataUrl.indexOf(',')
+  if (comma === -1) return null
+  const isBase64 = /;base64/i.test(dataUrl.slice(0, comma))
+  const payload = dataUrl.slice(comma + 1)
+  let buf: Buffer
+  try {
+    buf = isBase64 ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf8')
+  } catch {
+    return null
+  }
+
+  const filesDir = path.join(SESSION_STATE_ROOT, sessionIdForTask(taskId), 'files')
+  mkdirSync(filesDir, { recursive: true })
+
+  // De-dupe on collision so two "image.png" attachments don't clobber.
+  const safe = sanitizeFilename(name)
+  const ext = path.extname(safe)
+  const stem = path.basename(safe, ext)
+  let finalName = safe
+  for (let n = 1; existsSync(path.join(filesDir, finalName)); n++) {
+    finalName = `${stem}-${n}${ext}`
+  }
+
+  const absPath = path.join(filesDir, finalName)
+  writeFileSync(absPath, buf)
+  return { absPath, relPath: `files/${finalName}` }
 }

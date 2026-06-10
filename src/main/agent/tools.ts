@@ -1,11 +1,10 @@
 import { writeMemory, searchMemory, updateMemory, markMemoryInactive } from '../memory'
-import { createTask, updateTask, listTasks, addTaskActivity, listTaskActivities, findRelatedTask } from '../tasks'
+import { createTask, updateTask, listTasks, getTask, addTaskActivity, listTaskActivities, findRelatedTask } from '../tasks'
 import { listProjects, createProject, updateProject, deleteProject } from '../projects'
-import { listRelations, createRelation, updateRelation, deleteRelation } from '../relations'
 import { getPreferences, setPreferences } from '../preferences'
 import { listJobs, createJob, updateJob, deleteJob, toggleJob } from '../jobs'
 import { showSystemNotification } from '../index'
-import { isJobSession, jobCreatedTaskIds } from './state'
+import { isJobSession, jobCreatedTaskIds, currentSessionId } from './state'
 import { getActiveMcpTools } from './mcp'
 import { browser, desktop, isBrowserAvailable, isDesktopAvailable, getDesktopUnavailableReason } from '../automation'
 import { listSkills, installSkillFromLocalPath } from '../skills'
@@ -30,9 +29,7 @@ export function buildTools(): Tool<any>[] {
     addTaskActivityTool,
     getTaskActivitiesTool,
     queryProjectsTool,
-    queryRelationsTool,
     manageProjectTool,
-    manageRelationTool,
     manageJobTool,
     managePreferencesTool,
     generateReportTool,
@@ -153,7 +150,18 @@ const listInstalledSkillsTool: Tool<any> = {
 
 const memoryWriteTool: Tool<any> = {
   name: 'memory_write',
-  description: 'Manage memory. action: add = record new info, update = correct an existing memory, remove = mark a wrong memory inactive. For update/remove you MUST pass the real target_id of an existing memory — get it from memory_search first (never guess an ID). When the user corrects you, search for the wrong memory, then update or remove it by its id before adding the corrected fact.',
+  description: `Manage long-term memory. Records stable knowledge about the user and their world.
+
+Rules:
+1. SEARCH FIRST — before adding, use memory_search to check if the fact already exists.
+2. UPDATE if same subject + same attribute exists (don't duplicate).
+3. Format: one-liner declarative facts ("User prefers X", "Alice: manager at Contoso, prefers async").
+4. People: one compact card per person. Only for recurring/important people.
+5. Do NOT store: task progress, event details (dates/times/venues/budgets/attendees), scheduling info, or anything that expires. Use update_aide_task working_state instead.
+6. Test before writing: "Will this fact still be true and useful in 2 weeks?" If not → working_state, not memory.
+
+Actions: add = new fact, update = correct existing, remove = mark wrong entry inactive.
+For update/remove: pass the real target_id from memory_search (never guess).`,
   parameters: {
     type: 'object',
     properties: {
@@ -199,7 +207,7 @@ const memorySearchTool: Tool<any> = {
   },
   skipPermission: true,
   handler: async (args: { query: string; limit?: number }) => {
-    const results = searchMemory(args.query, args.limit || 5)
+    const results = await searchMemory(args.query, args.limit || 5)
     if (results.length === 0) return { memories: [], message: 'No relevant memories found' }
     return {
       memories: results.map(m => ({
@@ -226,8 +234,7 @@ const createTaskTool: Tool<any> = {
       sourceId: { type: 'string', description: 'Unique source identifier (email ID, notification ID, message ID, PR/Issue number). Extract from MCP response data.' },
       sourceUrl: { type: 'string', description: 'External link to the source (PR/Issue URL, email/message deep link, etc.) for one-click navigation.' },
       dueDate: { type: 'string', description: 'ISO 8601 due date' },
-      projectId: { type: 'string', description: 'Associated project ID' },
-      relatedRelationIds: { type: 'array', items: { type: 'string' }, description: 'List of related people IDs' }
+      projectIds: { type: 'array', items: { type: 'string' }, description: 'Associated project IDs' }
     },
     required: ['title', 'priority', 'description']
   },
@@ -304,7 +311,7 @@ const createTaskTool: Tool<any> = {
 
 const updateTaskTool: Tool<any> = {
   name: 'update_aide_task',
-  description: 'Update an Aide task (the user\'s personal task tracker). Change status (complete/cancel), priority, title, etc.',
+  description: 'Update an Aide task. Change status, priority, title, working_state (progress/outputs), or link to projects.',
   parameters: {
     type: 'object',
     properties: {
@@ -312,13 +319,26 @@ const updateTaskTool: Tool<any> = {
       status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] },
       priority: { type: 'string', enum: ['p0', 'p1', 'p2'] },
       title: { type: 'string' },
-      description: { type: 'string' }
+      description: { type: 'string' },
+      working_state: { type: 'string', description: 'Current progress, decisions, outputs for this task. Updated in real-time as work progresses.' },
+      progress_summary: { type: 'string', description: 'One-sentence summary of what changed (logged to the activity timeline). Provide this whenever you update working_state.' },
+      projectIds: { type: 'array', items: { type: 'string' }, description: 'Project IDs this task relates to' }
     },
     required: ['id']
   },
   skipPermission: true,
   handler: async (args: any) => {
-    const { id, ...changes } = args
+    const { id, working_state, progress_summary, projectIds, ...changes } = args
+    if (working_state !== undefined) changes.workingState = working_state
+    if (projectIds !== undefined) changes.projectIds = projectIds
+
+    // Auto-promote pending → in_progress when working_state is updated
+    if (changes.workingState !== undefined && !changes.status) {
+      const current = getTask(id)
+      if (current && current.status === 'pending') {
+        changes.status = 'in_progress'
+      }
+    }
 
     // Prevent jobs from completing tasks they JUST created in the same session (anti-self-completion)
     // But allow completing pre-existing tasks based on new external info (e.g. PR merged → task done)
@@ -330,6 +350,13 @@ const updateTaskTool: Tool<any> = {
 
     const task = updateTask(id, changes)
     emitToRenderer({ type: 'task:updated', task })
+
+    // Auto-log progress activity when working_state is updated with a summary
+    if (changes.workingState !== undefined && progress_summary) {
+      const activity = addTaskActivity(id, { type: 'progress', summary: progress_summary })
+      emitToRenderer({ type: 'task:activity', taskId: id, activity })
+    }
+
     return { success: true, task: { id: task.id, title: task.title, status: task.status } }
   }
 }
@@ -363,7 +390,7 @@ const findRelatedTaskTool: Tool<any> = {
 
 const addTaskActivityTool: Tool<any> = {
   name: 'add_task_activity',
-  description: 'Record one "substantive update" for an existing task. The bar is strict: only record when things actually moved forward, got blocked, changed status, or require the user\'s direct response. Pleasantries / acknowledgements / forwards / CCs / bot notifications / minor wording tweaks are never recorded. Record each update only once (check first with get_task_activities). summary must state "what substantive thing happened", not paraphrase the raw message.',
+  description: 'Record a substantive update on a task. Use for real progress, blockers, or comments needing user response. Do not record pleasantries, acknowledgements, or bot notifications.',
   parameters: {
     type: 'object',
     properties: {
@@ -465,48 +492,7 @@ const queryProjectsTool: Tool<any> = {
         id: p.id,
         name: p.name,
         description: p.description,
-        techStack: p.techStack,
-        team: p.team
-      }))
-    }
-  }
-}
-
-const queryRelationsTool: Tool<any> = {
-  name: 'query_relations',
-  description: 'Query existing contacts. Use when creating a task to determine which known people are involved. Also used to look up someone\'s contact info, role, etc.',
-  parameters: {
-    type: 'object',
-    properties: {
-      keyword: { type: 'string', description: 'Fuzzy search by name, organization, or title (optional; returns all if omitted)' },
-      role: { type: 'string', enum: ['manager', 'peer', 'report', 'external', 'stakeholder'], description: 'Filter by role' }
-    }
-  },
-  skipPermission: true,
-  handler: async (args: { keyword?: string; role?: string }) => {
-    let relations = listRelations()
-    if (args?.role) {
-      relations = relations.filter(r => r.role === args.role)
-    }
-    if (args?.keyword) {
-      const kw = args.keyword.toLowerCase()
-      relations = relations.filter(r =>
-        r.name.toLowerCase().includes(kw) ||
-        (r.org || '').toLowerCase().includes(kw) ||
-        (r.title || '').toLowerCase().includes(kw) ||
-        (r.email || '').toLowerCase().includes(kw)
-      )
-    }
-    if (relations.length === 0) return { relations: [], message: 'No matching contact found', hint: 'If a new person is involved, create them with manage_relation(action: create)' }
-    return {
-      relations: relations.map(r => ({
-        id: r.id,
-        name: r.name,
-        role: r.role,
-        org: r.org,
-        title: r.title,
-        email: r.email,
-        expertise: r.expertise
+        techStack: p.techStack
       }))
     }
   }
@@ -525,7 +511,6 @@ const manageProjectTool: Tool<any> = {
       repoPath: { type: 'string', description: 'GitHub repo URL or local folder path (required for create)' },
       docsPath: { type: 'string', description: 'Docs path' },
       techStack: { type: 'string', description: 'Tech stack' },
-      team: { type: 'array', items: { type: 'string' }, description: 'List of team member relation IDs' },
       notes: { type: 'string', description: 'Notes' }
     },
     required: ['action']
@@ -549,52 +534,6 @@ const manageProjectTool: Tool<any> = {
       if (!id) return { success: false, error: 'delete requires id' }
       deleteProject(id)
       emitToRenderer({ type: 'project:deleted', projectId: id })
-      return { success: true, message: 'Deleted' }
-    }
-    return { success: false, error: 'Unknown action' }
-  }
-}
-
-const manageRelationTool: Tool<any> = {
-  name: 'manage_relation',
-  description: 'Create, update, or delete a contact.',
-  parameters: {
-    type: 'object',
-    properties: {
-      action: { type: 'string', enum: ['create', 'update', 'delete'], description: 'Operation type' },
-      id: { type: 'string', description: 'Contact ID (required for update)' },
-      name: { type: 'string', description: 'Name (required for create)' },
-      role: { type: 'string', enum: ['manager', 'peer', 'report', 'external', 'stakeholder'], description: 'Role relationship' },
-      org: { type: 'string', description: 'Organization/team' },
-      title: { type: 'string', description: 'Job title' },
-      email: { type: 'string', description: 'Email' },
-      teamsId: { type: 'string', description: 'Teams ID' },
-      timezone: { type: 'string', description: 'Timezone' },
-      expertise: { type: 'array', items: { type: 'string' }, description: 'Areas of expertise' },
-      communicationStyle: { type: 'string', description: 'Communication preference' },
-      notes: { type: 'string', description: 'Notes' }
-    },
-    required: ['action']
-  },
-  skipPermission: true, // contact management runs automatically
-  handler: async (args: any) => {
-    const { action, id, ...fields } = args
-    if (action === 'create') {
-      if (!fields.name) return { success: false, error: 'create requires name' }
-      if (!fields.role) fields.role = 'peer' // default to peer
-      const relation = createRelation({ ...fields, source: 'agent' })
-      emitToRenderer({ type: 'relation:created', relation })
-      return { success: true, id: relation.id, name: relation.name }
-    }
-    if (action === 'update') {
-      if (!id) return { success: false, error: 'update requires id' }
-      const relation = updateRelation(id, fields)
-      return { success: true, id: relation.id, name: relation.name }
-    }
-    if (action === 'delete') {
-      if (!id) return { success: false, error: 'delete requires id' }
-      deleteRelation(id)
-      emitToRenderer({ type: 'relation:deleted', relationId: id })
       return { success: true, message: 'Deleted' }
     }
     return { success: false, error: 'Unknown action' }

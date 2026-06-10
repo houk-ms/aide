@@ -5,7 +5,6 @@ import { getL0Content, setL0Content, searchMemory, listMemory, updateMemory, del
 import { listJobs, toggleJob, getJobLastSummary, createJob, updateJob, deleteJob, runJob } from '../jobs'
 import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft, checkCliAvailability, listGhAccounts, switchGhAccount } from '../connections'
 import { listProjects, getProject, createProject, updateProject, deleteProject } from '../projects'
-import { listRelations, getRelation, createRelation, updateRelation, deleteRelation } from '../relations'
 import { getPreferences, setPreferences } from '../preferences'
 import { getWeChatStatus, connectWeChat, disconnectWeChat, pushToWeChat, setTargetUser } from '../wechat'
 import { setBaseUrl as setWeChatBaseUrl } from '../wechat/connection'
@@ -16,7 +15,7 @@ import { listChannels, deliverTo } from '../channels'
 import { listSkills, getSkill, toggleSkill, deleteSkill } from '../skills'
 import { listSources, syncSource, syncAllSources, browseSkills, installFromMarketplace } from '../skills/sources'
 import { getUpdateState, checkForUpdates, downloadUpdate, quitAndInstall } from '../updater'
-import { openArtifact, revealArtifact, artifactExists } from '../files'
+import { openArtifact, revealArtifact, artifactExists, listArtifacts, revealArtifactsFolder } from '../files'
 import { sdkHealth, sdkError } from '../health'
 
 export function registerIpcHandlers(): void {
@@ -89,13 +88,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('projects:update', (_, id, changes) => updateProject(id, changes))
   ipcMain.handle('projects:delete', (_, id) => deleteProject(id))
 
-  // === Relations ===
-  ipcMain.handle('relations:list', () => listRelations())
-  ipcMain.handle('relations:get', (_, id) => getRelation(id))
-  ipcMain.handle('relations:create', (_, input) => createRelation(input))
-  ipcMain.handle('relations:update', (_, id, changes) => updateRelation(id, changes))
-  ipcMain.handle('relations:delete', (_, id) => deleteRelation(id))
-
   // === Preferences ===
   ipcMain.handle('preferences:get', () => getPreferences())
   ipcMain.handle('preferences:set', (_, prefs) => setPreferences(prefs))
@@ -153,6 +145,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('files:open', (_, taskId, ref) => openArtifact(taskId, ref))
   ipcMain.handle('files:reveal', (_, taskId, ref) => revealArtifact(taskId, ref))
   ipcMain.handle('files:exists', (_, taskId, ref) => artifactExists(taskId, ref))
+  ipcMain.handle('files:list', (_, taskId) => listArtifacts(taskId))
+  ipcMain.handle('files:openFolder', (_, taskId) => revealArtifactsFolder(taskId))
 
   // === System health ===
   ipcMain.handle('system:health', () => ({ sdk: sdkHealth, sdkError }))

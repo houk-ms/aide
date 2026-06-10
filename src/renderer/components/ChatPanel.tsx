@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, FolderOpen } from 'lucide-react'
+import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useChatStore, GENERAL_KEY } from '../stores/chatStore'
 import type { LiveStep } from '../stores/chatStore'
-import type { ChatMessage, PendingAction, ModelInfo, TaskActivity, TurnStep } from '@shared/types'
+import type { ChatMessage, ChatAttachment, PendingAction, ModelInfo, TaskActivity, TurnStep, Task, ArtifactFile } from '@shared/types'
 
 // Stable empty reference so the per-session live selector doesn't return a new
 // array each render (which would thrash zustand's equality check).
@@ -117,6 +117,7 @@ export function ChatPanel() {
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [showOtherModels, setShowOtherModels] = useState(false)
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -201,7 +202,9 @@ export function ChatPanel() {
 
   const handleFileSelect = useCallback((files: FileList | null) => {
     if (!files) return
+    const rejected: string[] = []
     Array.from(files).forEach(file => {
+      if (file.size > MAX_ATTACHMENT_BYTES) { rejected.push(file.name); return }
       const reader = new FileReader()
       reader.onload = () => {
         setAttachments(prev => [...prev, {
@@ -214,7 +217,19 @@ export function ChatPanel() {
       }
       reader.readAsDataURL(file)
     })
+    if (rejected.length > 0) {
+      setAttachmentError(
+        `${rejected.join(', ')} ${rejected.length > 1 ? 'exceed' : 'exceeds'} the ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`
+      )
+    }
   }, [])
+
+  // Auto-dismiss the attachment warning so it never lingers.
+  useEffect(() => {
+    if (!attachmentError) return
+    const t = setTimeout(() => setAttachmentError(null), 4000)
+    return () => clearTimeout(t)
+  }, [attachmentError])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
@@ -262,7 +277,6 @@ export function ChatPanel() {
       {/* Messages */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto scrollbar-thin min-h-0">
         <div className="chat-content-width mx-auto px-6 py-6 space-y-5">
-          {selectedTask && <TaskActivityPanel taskId={selectedTask.id} lastActivityAt={selectedTask.lastActivityAt} />}
 
           {messages.length === 0 && !isStreaming && <EmptyState taskTitle={selectedTask?.title} />}
 
@@ -289,6 +303,16 @@ export function ChatPanel() {
       {/* Input Area */}
       <div className="shrink-0">
         <div className="chat-content-width mx-auto px-6 py-3 pb-4">
+          {/* Oversized-file warning (auto-dismisses) */}
+          {attachmentError && (
+            <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[12px] text-amber-500 anim-fade-up">
+              <AlertTriangle size={13} className="shrink-0" />
+              <span className="flex-1 min-w-0 truncate">{attachmentError}</span>
+              <button onClick={() => setAttachmentError(null)} className="text-amber-500/70 hover:text-amber-500 shrink-0">
+                <X size={12} />
+              </button>
+            </div>
+          )}
           {/* Attachment preview */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
@@ -297,9 +321,10 @@ export function ChatPanel() {
                   {a.type.startsWith('image/') ? (
                     <img src={a.dataUrl} className="w-5 h-5 rounded object-cover" alt="" />
                   ) : (
-                    <Paperclip size={12} className="text-text-tertiary" />
+                    <AttachmentIcon kind={attachmentKind(a.type, a.name)} size={13} />
                   )}
                   <span className="max-w-[120px] truncate">{a.name}</span>
+                  {a.size > 0 && <span className="text-[10.5px] text-text-tertiary">{formatBytes(a.size)}</span>}
                   <button onClick={() => removeAttachment(a.id)} className="text-text-tertiary hover:text-text-primary ml-0.5">
                     <X size={12} />
                   </button>
@@ -451,14 +476,47 @@ export function ChatPanel() {
 
 /* === Task Header === */
 
-function TaskHeader({ task, onBack }: {
-  task: { id: string; title: string; status: string; priority: string; description: string; source: { type: string; externalUrl?: string }; dueDate: string | null; relatedRelationIds: string[]; projectId: string | null; lastActivityAt?: string | null }
-  onBack: () => void
-}) {
-  const { completeTask, cancelTask } = useTaskStore()
+/* === Task header — title + meta row with a right-aligned facet toolbar === */
+
+type Facet = 'state' | 'activity' | 'files' | null
+
+function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
   const sourceLabel: Record<string, string> = { email: 'Email', github: 'GitHub', teams: 'Teams', calendar: 'Calendar', user: 'Manual', agent: 'Agent' }
   const statusLabel: Record<string, string> = { pending: 'Pending', in_progress: 'In progress', completed: 'Completed', cancelled: 'Cancelled' }
-  const isOpen = task.status === 'pending' || task.status === 'in_progress'
+
+  // Facet toolbar lives on the right of the meta row; its body expands flush
+  // below the header. Counts come from the task's activity log + output files.
+  const [facet, setFacet] = useState<Facet>(null)
+  const [activities, setActivities] = useState<TaskActivity[]>([])
+  const [files, setFiles] = useState<ArtifactFile[]>([])
+  const [activitySeenAt, setActivitySeenAt] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    window.aide.tasks.listActivities(task.id).then(a => { if (alive) setActivities(a) }).catch(() => {})
+    window.aide.files.list(task.id).then(f => { if (alive) setFiles(f) }).catch(() => {})
+    return () => { alive = false }
+  }, [task.id, task.lastActivityAt])
+
+  // Last-seen activity marker, persisted per task so the unread dot survives restarts.
+  useEffect(() => {
+    setActivitySeenAt(localStorage.getItem(`aide:activitySeen:${task.id}`))
+  }, [task.id])
+
+  const hasState = !!task.workingState
+  const latestActivityAt = activities[0]?.timestamp ?? null
+  const activityUnread = !!latestActivityAt && latestActivityAt !== activitySeenAt && (!activitySeenAt || latestActivityAt > activitySeenAt)
+
+  // Mark Activity as seen whenever its panel is open — covers both opening it
+  // and new entries arriving live while it stays open.
+  useEffect(() => {
+    if (facet === 'activity' && latestActivityAt && latestActivityAt !== activitySeenAt) {
+      localStorage.setItem(`aide:activitySeen:${task.id}`, latestActivityAt)
+      setActivitySeenAt(latestActivityAt)
+    }
+  }, [facet, latestActivityAt, activitySeenAt, task.id])
+
+  const toggle = (f: Exclude<Facet, null>) => setFacet(cur => (cur === f ? null : f))
 
   return (
     <header className="shrink-0">
@@ -468,7 +526,9 @@ function TaskHeader({ task, onBack }: {
         </button>
         <h2 className="text-[13px] font-medium text-text-primary truncate flex-1 no-drag">{task.title}</h2>
       </div>
-      <div className="px-5 pb-2 flex items-center gap-2 text-[12px] text-text-tertiary flex-wrap">
+
+      {/* Meta row — left: task meta · right: facet toolbar */}
+      <div className="px-5 pb-2 flex items-center gap-x-2 gap-y-1 text-[12px] text-text-tertiary flex-wrap">
         <PriorityBadge priority={task.priority} />
         <span className="text-edge">·</span>
         <span>{sourceLabel[task.source.type] || task.source.type}</span>
@@ -485,104 +545,175 @@ function TaskHeader({ task, onBack }: {
             </span>
           </>
         )}
-        {isOpen && (
-          <div className="ml-auto flex items-center gap-1">
-            <button onClick={() => cancelTask(task.id)} className="h-6 px-2 rounded-md text-[12px] text-text-tertiary hover:text-danger hover:bg-danger/8 transition-colors flex items-center gap-1">
-              <X size={12} /> Cancel
-            </button>
-            <button onClick={() => completeTask(task.id)} className="h-6 px-2 rounded-md text-[12px] font-medium text-success hover:bg-success/10 transition-colors flex items-center gap-1">
-              <Check size={12} /> Done
-            </button>
-          </div>
-        )}
+
+        {/* Facet toolbar — fills the meta row's empty right side */}
+        <div className="ml-auto flex items-center gap-0.5 no-drag">
+          {hasState && (
+            <Segment icon={<FileText size={12.5} strokeWidth={2} />} label="State" active={facet === 'state'} onClick={() => toggle('state')} />
+          )}
+          {activities.length > 0 && (
+            <Segment icon={<Activity size={12.5} strokeWidth={2} />} label="Activity" count={activities.length} unread={activityUnread} active={facet === 'activity'} onClick={() => toggle('activity')} />
+          )}
+          {files.length > 0 && (
+            <Segment icon={<Files size={12.5} strokeWidth={2} />} label="Files" count={files.length} active={facet === 'files'} onClick={() => toggle('files')} />
+          )}
+        </div>
       </div>
+
+      {/* Expanded facet body — flush, capped height + scroll */}
+      {facet && (
+        <div className="border-t border-edge/60 bg-surface-1/40 max-h-[260px] overflow-y-auto scrollbar-thin anim-fade-in">
+          {facet === 'state' && (
+            <div className="px-5 py-3">
+              <div className="text-[12.5px] text-text-secondary leading-[1.65] whitespace-pre-wrap break-words select-text">
+                {task.workingState}
+              </div>
+            </div>
+          )}
+          {facet === 'activity' && <ActivityTimeline activities={activities} />}
+          {facet === 'files' && <FilesPanel taskId={task.id} files={files} />}
+        </div>
+      )}
+
       <div className="h-px bg-edge" />
     </header>
   )
 }
 
-/* === Task Activity Panel — prominent card at top of conversation === */
+// A single segment in the task toolbar: small icon + label + optional count.
+// The active segment is softly tinted; counts are muted, never a filled bubble.
+// An accent dot appears when there's unread content (e.g. new activity).
+function Segment({ icon, label, count, unread, active, onClick }: {
+  icon: React.ReactNode
+  label: string
+  count?: number
+  unread?: boolean
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] transition-colors ${
+        active ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2/70'
+      }`}
+    >
+      <span className={active ? 'text-accent' : 'text-text-tertiary'}>{icon}</span>
+      <span>{label}</span>
+      {count != null && count > 0 && (
+        <span className="tabular-nums text-[11px] text-text-tertiary/80">{count}</span>
+      )}
+      {unread && <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" aria-label="new" />}
+    </button>
+  )
+}
 
-function TaskActivityPanel({ taskId, lastActivityAt }: { taskId: string; lastActivityAt?: string | null }) {
-  const [activities, setActivities] = useState<TaskActivity[]>([])
-  const [expanded, setExpanded] = useState(false)
+/* === Files facet — browse everything a task produced === */
 
-  useEffect(() => {
-    let alive = true
-    window.aide.tasks.listActivities(taskId).then(a => { if (alive) setActivities(a) })
-    return () => { alive = false }
-  }, [taskId, lastActivityAt])
+function FilesPanel({ taskId, files }: { taskId: string | null; files: ArtifactFile[] }) {
+  if (files.length === 0) {
+    return (
+      <div className="px-4 py-5 text-center text-[12px] text-text-tertiary">
+        No files yet. Files the agent creates or you attach will appear here.
+      </div>
+    )
+  }
+  return (
+    <div className="px-3 py-2">
+      {files.map(f => (
+        <div
+          key={f.name}
+          className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-2/60 transition-colors"
+        >
+          <button
+            onClick={() => window.aide.files.open(taskId, f.name)}
+            className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
+            title={`Open ${f.name}`}
+          >
+            <div className="w-7 h-7 rounded-md bg-surface-2 flex items-center justify-center shrink-0 text-text-secondary">
+              <FileGlyph name={f.name} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[12.5px] text-text-primary truncate group-hover:text-accent transition-colors">{f.name}</div>
+              <div className="text-[11px] text-text-tertiary tabular-nums">
+                {formatBytes(f.size)} · {formatActivityTime(f.modifiedAt)}
+              </div>
+            </div>
+          </button>
+          <button
+            onClick={() => window.aide.files.reveal(taskId, f.name)}
+            className="inline-flex items-center justify-center w-6 h-6 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0 opacity-0 group-hover:opacity-100"
+            title="Reveal in folder"
+          >
+            <FolderOpen size={12} />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
 
-  if (activities.length === 0) return null
+// Pick a file-type glyph from the extension, reusing the attachment icon set.
+function FileGlyph({ name }: { name: string }) {
+  const kind = attachmentKind('', name)
+  const size = 14
+  switch (kind) {
+    case 'image': return <FileIcon size={size} />
+    case 'video': return <FileVideo size={size} />
+    case 'audio': return <FileAudio size={size} />
+    case 'archive': return <FileArchive size={size} />
+    case 'code': return <FileCode size={size} />
+    default: return <FileText size={size} />
+  }
+}
 
-  const latest = activities[0]
+/* === Activity timeline — facet body (was the standalone activity card) === */
+
+function ActivityTimeline({ activities }: { activities: TaskActivity[] }) {
+  if (activities.length === 0) {
+    return (
+      <div className="px-4 py-5 text-center text-[12px] text-text-tertiary">
+        No activity yet.
+      </div>
+    )
+  }
   const typeMeta: Record<string, { label: string; dot: string; text: string }> = {
     progress: { label: 'Progress', dot: 'bg-accent', text: 'text-accent' },
     status_change: { label: 'Status', dot: 'bg-text-tertiary', text: 'text-text-secondary' },
     blocker: { label: 'Blocked', dot: 'bg-danger', text: 'text-danger' },
     comment: { label: 'Needs reply', dot: 'bg-success', text: 'text-success' },
-    note: { label: 'Note', dot: 'bg-text-tertiary', text: 'text-text-tertiary' }
+    note: { label: 'Note', dot: 'bg-accent', text: 'text-accent' }
   }
-
   return (
-    <div className="rounded-xl border border-accent/25 bg-accent/[0.04] overflow-hidden anim-fade-up">
-      {/* Header — clickable to toggle */}
-      <button
-        onClick={() => setExpanded(v => !v)}
-        className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-accent/[0.06] transition-colors text-left"
-      >
-        <div className="w-7 h-7 rounded-lg bg-accent/12 flex items-center justify-center shrink-0">
-          <Activity size={15} className="text-accent" strokeWidth={2} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-text-primary">Task activity</span>
-            <span className="text-[11px] font-medium text-accent bg-accent/12 rounded-full px-1.5 py-[1px]">{activities.length}</span>
-          </div>
-          {!expanded && (
-            <div className="text-[12px] text-text-tertiary truncate mt-0.5">
-              Latest · {latest.summary}
-            </div>
-          )}
-        </div>
-        <div className="shrink-0 text-text-tertiary">
-          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-        </div>
-      </button>
-
-      {/* Expanded timeline */}
-      {expanded && (
-        <div className="px-4 pb-4 pt-1">
-          <div className="relative pl-5">
-            {/* vertical connector line */}
-            <div className="absolute left-[5px] top-1.5 bottom-1.5 w-px bg-edge" />
-            <div className="space-y-4">
-              {activities.map(a => {
-                const m = typeMeta[a.type] || typeMeta.note
-                return (
-                  <div key={a.id} className="relative">
-                    {/* dot on the line */}
-                    <div className={`absolute -left-5 top-1 w-[11px] h-[11px] rounded-full ring-2 ring-surface-0 ${m.dot}`} />
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className={`text-[11px] font-medium ${m.text}`}>{m.label}</span>
-                      <span className="text-[11px] text-text-tertiary/70">{formatActivityTime(a.timestamp)}</span>
-                    </div>
-                    <div className="text-[13px] text-text-secondary leading-[1.55] break-words select-text">{a.summary}</div>
-                    {a.sourceRef && (
-                      <div className="inline-flex items-center mt-1 text-[10.5px] text-text-tertiary/70 bg-surface-1 border border-edge rounded px-1.5 py-[1px] font-mono max-w-full truncate">
-                        {a.sourceRef}
-                      </div>
-                    )}
+    <div className="px-5 py-3.5">
+      <div className="relative pl-5">
+        <div className="absolute left-[5px] top-1.5 bottom-1.5 w-px bg-edge" />
+        <div className="space-y-3">
+          {activities.map(a => {
+            const m = typeMeta[a.type] || typeMeta.note
+            return (
+              <div key={a.id} className="relative">
+                <div className={`absolute -left-5 top-1 w-[11px] h-[11px] rounded-full ring-2 ring-surface-0 ${m.dot}`} />
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className={`text-[11px] font-medium ${m.text}`}>{m.label}</span>
+                  <span className="text-[11px] text-text-tertiary/70">{formatActivityTime(a.timestamp)}</span>
+                </div>
+                <div className="text-[12.5px] text-text-secondary leading-[1.55] break-words select-text">{a.summary}</div>
+                {a.sourceRef && (
+                  <div className="inline-flex items-center mt-1 text-[10.5px] text-text-tertiary/70 bg-surface-1 border border-edge rounded px-1.5 py-[1px] font-mono max-w-full truncate">
+                    {a.sourceRef}
                   </div>
-                )
-              })}
-            </div>
-          </div>
+                )}
+              </div>
+            )
+          })}
         </div>
-      )}
+      </div>
     </div>
   )
 }
+
+/* === (removed) standalone Task Activity Panel — folded into TaskStatusBar === */
 
 function formatActivityTime(iso: string): string {
   const d = new Date(iso)
@@ -593,6 +724,177 @@ function formatActivityTime(iso: string): string {
 }
 
 /* === Message Bubble === */
+
+// Per-file attachment ceiling. Each attachment is base64-inlined into the
+// message and persisted, so an unbounded file would bloat the DB; 10 MB
+// comfortably covers images and documents while keeping storage lean.
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+// Human-readable byte size for an attachment label.
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes < 0) return ''
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`
+  const mb = kb / 1024
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`
+}
+
+// Approximate the decoded byte size of a base64 data URL (display only).
+function dataUrlBytes(dataUrl: string): number {
+  const i = dataUrl.indexOf('base64,')
+  if (i === -1) return 0
+  const b64 = dataUrl.slice(i + 7)
+  const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((b64.length * 3) / 4) - padding)
+}
+
+// Classify an attachment from its MIME type, falling back to the filename
+// extension when the type is missing or too generic to be useful.
+type FileKind = 'image' | 'video' | 'audio' | 'pdf' | 'archive' | 'code' | 'doc' | 'file'
+function attachmentKind(type: string, name: string): FileKind {
+  const t = (type || '').toLowerCase()
+  const ext = name.toLowerCase().split('.').pop() || ''
+  if (t.startsWith('image/')) return 'image'
+  if (t.startsWith('video/')) return 'video'
+  if (t.startsWith('audio/')) return 'audio'
+  if (t === 'application/pdf' || ext === 'pdf') return 'pdf'
+  if (/(zip|tar|gzip|x-7z|x-rar|compressed)/.test(t) || ['zip', 'tar', 'gz', 'tgz', 'rar', '7z'].includes(ext)) return 'archive'
+  if (t.startsWith('text/') || ['js', 'ts', 'tsx', 'jsx', 'json', 'py', 'rb', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'cs', 'php', 'sh', 'css', 'html', 'xml', 'yml', 'yaml', 'sql', 'md'].includes(ext)) return 'code'
+  if (['doc', 'docx', 'rtf', 'odt', 'xls', 'xlsx', 'csv', 'ppt', 'pptx'].includes(ext) || /(word|excel|spreadsheet|presentation|officedocument)/.test(t)) return 'doc'
+  return 'file'
+}
+
+function AttachmentIcon({ kind, size = 13 }: { kind: FileKind; size?: number }) {
+  const cls = 'shrink-0 text-text-tertiary'
+  switch (kind) {
+    case 'video': return <FileVideo size={size} className={cls} />
+    case 'audio': return <FileAudio size={size} className={cls} />
+    case 'pdf': return <FileText size={size} className={cls} />
+    case 'archive': return <FileArchive size={size} className={cls} />
+    case 'code': return <FileCode size={size} className={cls} />
+    case 'doc': return <FileText size={size} className={cls} />
+    default: return <FileIcon size={size} className={cls} />
+  }
+}
+
+// Full-screen image preview. Electron's renderer ignores target="_blank", so a
+// thumbnail click opens this in-app lightbox instead. Dismiss via the close
+// button, a backdrop click, or Esc.
+function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev }
+  }, [onClose])
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm anim-fade-in"
+      onClick={onClose}
+    >
+      <div className="absolute top-4 right-4 flex items-center gap-2">
+        <a
+          href={src}
+          download={alt}
+          onClick={e => e.stopPropagation()}
+          className="w-9 h-9 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white/90 transition-colors"
+          title="Download"
+        >
+          <Download size={17} />
+        </a>
+        <button
+          onClick={onClose}
+          className="w-9 h-9 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white/90 transition-colors"
+          title="Close (Esc)"
+        >
+          <X size={18} />
+        </button>
+      </div>
+      <img
+        src={src}
+        alt={alt}
+        onClick={e => e.stopPropagation()}
+        className="max-w-[92vw] max-h-[92vh] object-contain rounded-lg shadow-2xl anim-zoom-in"
+      />
+    </div>
+  )
+}
+
+// Renders the files a user attached to a message. Images become inline
+// thumbnails (click to open a full-screen preview), audio/video get a compact
+// inline player, and everything else a labeled chip (click to open/download) —
+// so each kind reads at a glance.
+function MessageAttachments({ attachments, isUser }: { attachments: ChatAttachment[]; isUser: boolean }) {
+  const [preview, setPreview] = useState<ChatAttachment | null>(null)
+  return (
+    <div className={`mt-1.5 flex flex-wrap gap-2 ${isUser ? 'justify-end' : ''}`}>
+      {attachments.map((a, i) => {
+        const kind = attachmentKind(a.type, a.name)
+        if (kind === 'image') {
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setPreview(a)}
+              title={a.name}
+              className="block rounded-xl overflow-hidden border border-edge hover:border-accent/50 transition-colors cursor-zoom-in"
+            >
+              <img
+                src={a.dataUrl}
+                alt={a.name}
+                className="max-w-[220px] max-h-[220px] object-cover"
+              />
+            </button>
+          )
+        }
+        if (kind === 'video') {
+          return (
+            <video
+              key={i}
+              src={a.dataUrl}
+              controls
+              className="max-w-[260px] max-h-[200px] rounded-xl border border-edge bg-black/40"
+            />
+          )
+        }
+        if (kind === 'audio') {
+          return (
+            <div key={i} className="flex flex-col gap-1.5 px-3 py-2 rounded-xl bg-surface-2 border border-edge-subtle max-w-[260px]">
+              <div className="flex items-center gap-1.5 text-[12px] text-text-secondary">
+                <FileAudio size={13} className="shrink-0 text-text-tertiary" />
+                <span className="truncate" title={a.name}>{a.name}</span>
+              </div>
+              <audio src={a.dataUrl} controls className="w-full h-8" />
+            </div>
+          )
+        }
+        const sizeLabel = formatBytes(dataUrlBytes(a.dataUrl))
+        return (
+          <a
+            key={i}
+            href={a.dataUrl}
+            target="_blank"
+            rel="noreferrer"
+            download={a.name}
+            title={a.name}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-surface-2 border border-edge-subtle hover:border-edge transition-colors max-w-[240px]"
+          >
+            <AttachmentIcon kind={kind} size={16} />
+            <span className="flex flex-col min-w-0">
+              <span className="truncate text-[12px] text-text-secondary leading-tight">{a.name}</span>
+              {sizeLabel && <span className="text-[10.5px] text-text-tertiary leading-tight">{sizeLabel}</span>}
+            </span>
+          </a>
+        )
+      })}
+      {preview && (
+        <ImageLightbox src={preview.dataUrl} alt={preview.name} onClose={() => setPreview(null)} />
+      )}
+    </div>
+  )
+}
 
 function MessageBubbleInner({ message }: { message: ChatMessage }) {
   const confirmAction = useChatStore(s => s.confirmAction)
@@ -627,6 +929,10 @@ function MessageBubbleInner({ message }: { message: ChatMessage }) {
               </div>
             )}
           </div>
+        )}
+
+        {message.attachments && message.attachments.length > 0 && (
+          <MessageAttachments attachments={message.attachments} isUser={isUser} />
         )}
 
         {/* Copy + timestamp row */}
@@ -723,8 +1029,8 @@ function ActionCard({ action, onConfirm }: { action: PendingAction; onConfirm: (
       )
     }
 
-    // Project/Relation management
-    if (toolName.includes('manage_project') || toolName.includes('manage_relation')) {
+    // Project management
+    if (toolName.includes('manage_project')) {
       const entries = Object.entries(details).filter(([k]) => !['kind', 'id', 'action'].includes(k))
       const actionVal = d('action')
       return entries.length > 0 ? (
@@ -817,9 +1123,7 @@ const TOOL_NAME_MAP: Record<string, string> = {
   update_aide_task: 'Update task',
   query_aide_tasks: 'Query tasks',
   query_projects: 'Query projects',
-  query_relations: 'Query contacts',
   manage_project: 'Manage project',
-  manage_relation: 'Manage contact',
   generate_report: 'Generate report',
   send_email_work_iq: 'Send email',
   reply_email_work_iq: 'Reply email',

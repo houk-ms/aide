@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { SlidersHorizontal, Check, Clock, X, ChevronDown, ChevronUp, Zap } from 'lucide-react'
+import { SlidersHorizontal, Check, X, ChevronDown, ChevronUp, Zap } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useChatStore, keyOf } from '../stores/chatStore'
@@ -144,7 +144,7 @@ export function TaskPanel() {
 function SidebarTaskItem({ task, selected, onSelect, isNew, hasActivity }: {
   task: Task; selected: boolean; onSelect: () => void; isNew?: boolean; hasActivity?: boolean
 }) {
-  const { completeTask, snooze } = useTaskStore()
+  const { completeTask, cancelTask } = useTaskStore()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   // "Working" = this task has a turn in flight right now. Drives the dot's
   // motion: working pulses, plain-unread stays static.
@@ -192,17 +192,11 @@ function SidebarTaskItem({ task, selected, onSelect, isNew, hasActivity }: {
               <Check size={12} strokeWidth={2} />
             </button>
             <button
-              onClick={e => {
-                e.stopPropagation()
-                const t = new Date()
-                t.setDate(t.getDate() + 1)
-                t.setHours(9, 0, 0, 0)
-                snooze(task.id, t.toISOString())
-              }}
-              className="w-5 h-5 rounded flex items-center justify-center text-text-tertiary hover:text-warning hover:bg-warning/10 transition-colors"
-              title="Snooze"
+              onClick={e => { e.stopPropagation(); cancelTask(task.id) }}
+              className="w-5 h-5 rounded flex items-center justify-center text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors"
+              title="Dismiss"
             >
-              <Clock size={12} strokeWidth={2} />
+              <X size={12} strokeWidth={2} />
             </button>
           </div>
         )}
@@ -218,7 +212,7 @@ function SidebarTaskItem({ task, selected, onSelect, isNew, hasActivity }: {
 /* === Context Menu === */
 
 function ContextMenu({ x, y, onClose, task }: { x: number; y: number; onClose: () => void; task: Task }) {
-  const { completeTask, cancelTask, snooze, updateTask } = useTaskStore()
+  const { completeTask, cancelTask, updateTask } = useTaskStore()
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -229,10 +223,8 @@ function ContextMenu({ x, y, onClose, task }: { x: number; y: number; onClose: (
 
   const items = [
     { icon: <Check size={13} />, label: 'Done', action: () => completeTask(task.id) },
-    { icon: <X size={13} />, label: 'Cancel', action: () => cancelTask(task.id) },
+    { icon: <X size={13} />, label: 'Dismiss', action: () => cancelTask(task.id) },
     { icon: <ChevronDown size={13} />, label: 'Lower priority', action: () => updateTask(task.id, { priority: 'p2' }) },
-    { icon: <Clock size={13} />, label: 'Snooze to tomorrow', action: () => { const t = new Date(); t.setDate(t.getDate() + 1); t.setHours(9, 0, 0, 0); snooze(task.id, t.toISOString()) } },
-    { icon: <Clock size={13} />, label: 'Snooze to next Monday', action: () => { const t = new Date(); const daysUntilMon = ((8 - t.getDay()) % 7) || 7; t.setDate(t.getDate() + daysUntilMon); t.setHours(9, 0, 0, 0); snooze(task.id, t.toISOString()) } },
   ]
 
   return (

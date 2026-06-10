@@ -10,9 +10,8 @@ export interface Task {
   // Source tracing
   source: TaskSource
 
-  // Relations
-  projectId: string | null
-  relatedRelationIds: string[]
+  // Associations
+  projectIds: string[]
 
   // Time
   createdAt: string // ISO 8601
@@ -27,6 +26,7 @@ export interface Task {
   // Agent processing
   sessionId: string | null
   result: string | null
+  workingState: string | null
 
   // Progress timeline
   lastActivityAt?: string | null
@@ -72,7 +72,7 @@ export interface MemoryEntry {
   recallCount: number
 }
 
-export type MemoryLayer = 'L0' | 'L1' | 'L2'
+export type MemoryLayer = 'L0' | 'L1'
 export type MemorySource = 'agent' | 'system' | 'user'
 
 // === Project ===
@@ -84,33 +84,11 @@ export interface Project {
   repoPath: string | null
   docsPath: string | null
   techStack: string | null
-  team: string[]
   notes: string | null
   source: 'user' | 'agent'
   createdAt: string
   updatedAt: string
 }
-
-// === Relation ===
-
-export interface Relation {
-  id: string
-  name: string
-  role: RelationRole
-  org: string | null
-  title: string | null
-  email: string | null
-  teamsId: string | null
-  timezone: string | null
-  expertise: string[]
-  communicationStyle: string | null
-  notes: string | null
-  source: 'user' | 'agent'
-  createdAt: string
-  updatedAt: string
-}
-
-export type RelationRole = 'manager' | 'peer' | 'report' | 'external' | 'stakeholder'
 
 // === Job ===
 
@@ -193,7 +171,9 @@ export interface BrowsableSkill {
   category?: string
   sourceId: string
   sourceName: string
-  sourceType: MarketplaceSourceType
+  /** Marketplace origin, or 'local' for a skill installed directly on disk
+   *  (no marketplace source) that's surfaced in the same detail view. */
+  sourceType: MarketplaceSourceType | 'local'
   path: string                   // Path in the repository
   installed: boolean
   risk?: string                  // Safety hint from the source index (e.g., 'safe')
@@ -274,6 +254,14 @@ export interface ChannelStatusInfo {
   lastError: string | null
 }
 
+// A file in a task's artifact folder (~/.copilot/session-state/{id}/files).
+// Surfaced in the task panel so users can browse everything a task produced.
+export interface ArtifactFile {
+  name: string
+  size: number
+  modifiedAt: string
+}
+
 // === IPC API ===
 
 export interface AideAPI {
@@ -287,7 +275,7 @@ export interface AideAPI {
     listActivities(taskId: string): Promise<TaskActivity[]>
   }
   chat: {
-    send(message: string, taskId: string | null, attachments?: { name: string; type: string; dataUrl: string }[]): Promise<ChatMessage>
+    send(message: string, taskId: string | null, attachments?: ChatAttachment[]): Promise<ChatMessage>
     getHistory(taskId: string | null): Promise<ChatMessage[]>
     confirmAction(actionId: string, decision: 'confirm' | 'modify' | 'cancel', modification?: string): Promise<void>
     triggerFirstMessage(taskId: string): Promise<ChatMessage>
@@ -330,13 +318,6 @@ export interface AideAPI {
     get(id: string): Promise<Project | null>
     create(input: CreateProjectInput): Promise<Project>
     update(id: string, changes: Partial<Project>): Promise<Project>
-    delete(id: string): Promise<void>
-  }
-  relations: {
-    list(): Promise<Relation[]>
-    get(id: string): Promise<Relation | null>
-    create(input: CreateRelationInput): Promise<Relation>
-    update(id: string, changes: Partial<Relation>): Promise<Relation>
     delete(id: string): Promise<void>
   }
   preferences: {
@@ -396,6 +377,8 @@ export interface AideAPI {
     open(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
     reveal(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
     exists(taskId: string | null, ref: string): Promise<boolean>
+    list(taskId: string | null): Promise<ArtifactFile[]>
+    openFolder(taskId: string | null): Promise<{ ok: boolean; error?: string }>
   }
   system: {
     health(): Promise<{ sdk: 'initializing' | 'ready' | 'error'; sdkError: string | null }>
@@ -431,8 +414,7 @@ export interface CreateTaskInput {
   description?: string
   priority?: Priority
   source: TaskSource
-  projectId?: string
-  relatedRelationIds?: string[]
+  projectIds?: string[]
   dueDate?: string
 }
 
@@ -442,21 +424,6 @@ export interface CreateProjectInput {
   repoPath?: string
   docsPath?: string
   techStack?: string
-  team?: string[]
-  notes?: string
-  source?: 'user' | 'agent'
-}
-
-export interface CreateRelationInput {
-  name: string
-  role: RelationRole
-  org?: string
-  title?: string
-  email?: string
-  teamsId?: string
-  timezone?: string
-  expertise?: string[]
-  communicationStyle?: string
   notes?: string
   source?: 'user' | 'agent'
 }
@@ -478,6 +445,15 @@ export interface MemoryFilter {
 
 // === Chat Types ===
 
+/** A file the user attached to a chat message. `dataUrl` is the inline
+ *  base64-encoded contents (e.g. `data:image/png;base64,...`), so an image can
+ *  be rendered directly in the conversation without a separate fetch. */
+export interface ChatAttachment {
+  name: string
+  type: string
+  dataUrl: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'agent'
@@ -485,6 +461,8 @@ export interface ChatMessage {
   timestamp: string
   taskId: string | null
   pendingAction?: PendingAction
+  /** Files the user attached when sending this message. */
+  attachments?: ChatAttachment[]
   /** Ordered "work" steps (narration + tool calls) that led to this reply.
    *  Kept as a foldable process trail so a long turn's intermediate output is
    *  preserved instead of being discarded once the final answer lands. */

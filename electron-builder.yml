@@ -26,6 +26,9 @@ asarUnpack:
   - "**/node_modules/@github/copilot-linux-arm64/**"
   - "**/node_modules/@nut-tree-fork/**"
   - "**/node_modules/playwright-core/**"
+  # transformers.js runs the embedding model through onnxruntime-node, whose
+  # native .node/.dll cannot be dlopen'd from inside app.asar — unpack it.
+  - "**/node_modules/onnxruntime-node/**"
 
 # Rebuild native modules (better-sqlite3) for the target platform.
 npmRebuild: true
@@ -36,6 +39,12 @@ extraResources:
     to: "browsers"
     filter:
       - "**/*"
+  # Local embedding model for semantic memory search, downloaded pre-build by
+  # scripts/fetch-model.mjs. Bundled so the feature works fully offline.
+  - from: "models"
+    to: "models"
+    filter:
+      - "**/*"
 
 # ---------------------------------------------------------------------------
 # macOS
@@ -44,8 +53,13 @@ mac:
   category: public.app-category.productivity
   icon: resources/icon-512.png
   target:
+    # DMG is built for arm64 only. Creating an x64 DMG on the arm64 GitHub
+    # runner runs `hdiutil create -fs APFS` cross-arch, which fails chronically
+    # (retries exhausted) and aborts the job before `latest-mac.yml` is written
+    # — breaking macOS auto-update. Intel users get the x64 ZIP instead, which
+    # is also what electron-updater consumes.
     - target: dmg
-      arch: [arm64, x64]
+      arch: [arm64]
     - target: zip
       arch: [arm64, x64]
   # Produce an unsigned build by default. Signing/notarization can be enabled

@@ -14,16 +14,18 @@
     "preview": "electron-vite preview",
     "icons": "node scripts/generate-icons.js",
     "social": "node scripts/generate-social-preview.js",
-    "dist": "electron-vite build && electron-builder",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:win": "electron-vite build && electron-builder --win",
-    "dist:linux": "electron-vite build && electron-builder --linux",
-    "postinstall": "npx @electron/rebuild --only better-sqlite3"
+    "fetch-model": "node scripts/fetch-model.mjs",
+    "dist": "npm run fetch-model && electron-vite build && electron-builder",
+    "dist:mac": "npm run fetch-model && electron-vite build && electron-builder --mac",
+    "dist:win": "npm run fetch-model && electron-vite build && electron-builder --win",
+    "dist:linux": "npm run fetch-model && electron-vite build && electron-builder --linux",
+    "postinstall": "npx @electron/rebuild --only better-sqlite3 && npx playwright install chromium"
   },
   "dependencies": {
     "@github/copilot-sdk": "^1.0.0",
     "@nut-tree-fork/nut-js": "^4.2.0",
     "@tailwindcss/typography": "^0.5.19",
+    "@xenova/transformers": "^2.17.2",
     "baileys": "^7.0.0-rc13",
     "better-sqlite3": "^11.0.0",
     "croner": "^8.0.0",

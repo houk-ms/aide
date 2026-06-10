@@ -1,3 +1,4 @@
+import { join } from 'path'
 import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
 import type { MemoryEntry, MemoryFilter, MemoryLayer, MemorySource } from '@shared/types'
@@ -76,12 +77,17 @@ export function writeMemory(params: {
     JSON.stringify(params.tags || [])
   )
 
+  // Embed asynchronously (fire-and-forget, don't block writes)
+  if ((params.layer || 'L1') === 'L1') {
+    embedMemoryEntry(id).catch(() => {})
+  }
+
   return getMemoryById(id)!
 }
 
-// === FTS5 Search with BM25 + Time Decay + Chinese fallback ===
+// === FTS5 Search with BM25 + Embedding fallback ===
 
-export function searchMemory(query: string, limit: number = 10): MemoryEntry[] {
+export async function searchMemory(query: string, limit: number = 10): Promise<MemoryEntry[]> {
   const db = getDb()
 
   // Check if query contains Chinese characters
@@ -125,7 +131,7 @@ export function searchMemory(query: string, limit: number = 10): MemoryEntry[] {
     const rows = db.prepare(`
       SELECT me.*, (${matchScore}) AS relevance
       FROM memory_entries me
-      WHERE (${conditions}) AND me.status = 'active' AND me.layer IN ('L1', 'L2')
+      WHERE (${conditions}) AND me.status = 'active' AND me.layer = 'L1'
       ORDER BY relevance DESC, me.updated_at DESC
       LIMIT ?
     `).all(...params, ...params, limit) as Record<string, unknown>[]
@@ -134,9 +140,17 @@ export function searchMemory(query: string, limit: number = 10): MemoryEntry[] {
       const ids = rows.map(r => r.id as string)
       const placeholders = ids.map(() => '?').join(',')
       db.prepare(`UPDATE memory_entries SET recall_count = recall_count + 1 WHERE id IN (${placeholders})`).run(...ids)
+      return rows.map(rowToMemory)
     }
 
-    return rows.map(rowToMemory)
+    // Chinese FTS returned nothing — fall back to embedding
+    const chineseEmbeddingResults = await embeddingSearch(query, limit)
+    if (chineseEmbeddingResults.length > 0) {
+      const ids = chineseEmbeddingResults.map(r => r.id)
+      const placeholders = ids.map(() => '?').join(',')
+      db.prepare(`UPDATE memory_entries SET recall_count = recall_count + 1 WHERE id IN (${placeholders})`).run(...ids)
+    }
+    return chineseEmbeddingResults
   }
 
   // For non-Chinese, use FTS5
@@ -150,26 +164,130 @@ export function searchMemory(query: string, limit: number = 10): MemoryEntry[] {
 
   if (!sanitizedQuery) return []
 
-  // BM25 scoring + time decay factor
+  // BM25 scoring — search L1 only, apply score threshold
+  const BM25_THRESHOLD = -5.0 // BM25 scores are negative in SQLite FTS5; closer to 0 = weaker match
   const rows = db.prepare(`
     SELECT me.*, 
-      bm25(memory_fts) AS score,
-      (julianday('now') - julianday(me.created_at)) AS age_days
+      bm25(memory_fts) AS score
     FROM memory_entries me
     JOIN memory_fts ON memory_fts.rowid = me.rowid
-    WHERE memory_fts MATCH ? AND me.status = 'active' AND me.layer IN ('L1', 'L2')
-    ORDER BY (bm25(memory_fts) * (1.0 / (1.0 + 0.01 * (julianday('now') - julianday(me.created_at)))))
+    WHERE memory_fts MATCH ? AND me.status = 'active' AND me.layer = 'L1'
+      AND bm25(memory_fts) < ?
+    ORDER BY bm25(memory_fts)
     LIMIT ?
-  `).all(sanitizedQuery, limit) as Record<string, unknown>[]
+  `).all(sanitizedQuery, BM25_THRESHOLD, limit) as Record<string, unknown>[]
 
   // Increment recall count for retrieved entries
   if (rows.length > 0) {
     const ids = rows.map(r => r.id as string)
     const placeholders = ids.map(() => '?').join(',')
     db.prepare(`UPDATE memory_entries SET recall_count = recall_count + 1 WHERE id IN (${placeholders})`).run(...ids)
+    return rows.map(rowToMemory)
   }
 
-  return rows.map(rowToMemory)
+  // Fallback: local embedding search when FTS5 returns nothing
+  const embeddingResults = await embeddingSearch(query, limit)
+  if (embeddingResults.length > 0) {
+    const ids = embeddingResults.map(r => r.id)
+    const placeholders = ids.map(() => '?').join(',')
+    db.prepare(`UPDATE memory_entries SET recall_count = recall_count + 1 WHERE id IN (${placeholders})`).run(...ids)
+  }
+  return embeddingResults
+}
+
+// === Embedding-based Semantic Search (loaded at startup) ===
+
+let embeddingModel: any = null
+let embeddingModelReady: Promise<any | null> | null = null
+
+/** Call once at app startup to begin loading the embedding model */
+export function initEmbeddingModel(): void {
+  if (embeddingModelReady) return
+  embeddingModelReady = (async () => {
+    // Use require() to load from node_modules at runtime (bypasses Vite bundling)
+    const modulePath = '@xenova/transformers'
+    const { pipeline, env } = require(modulePath)
+
+    // By default transformers.js resolves models relative to its own folder
+    // inside the read-only app.asar, so a packaged build can neither read a
+    // bundled model nor cache a downloaded one. Point it at the model we bundle
+    // offline via extraResources (scripts/fetch-model.mjs), with a writable
+    // userData cache as a fallback for the rare case the bundle is missing.
+    const { app } = require('electron')
+    env.localModelPath = app.isPackaged
+      ? join(process.resourcesPath, 'models')
+      : join(app.getAppPath(), 'models')
+    env.cacheDir = join(app.getPath('userData'), 'models-cache')
+    env.allowLocalModels = true
+
+    const model = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+    embeddingModel = model
+    console.log('[Memory] Embedding model loaded')
+    return model
+  })().catch((err: any) => {
+    console.warn('[Memory] Embedding model not available, semantic fallback disabled:', err)
+    return null
+  })
+}
+
+async function getEmbeddingModel(): Promise<any | null> {
+  if (embeddingModel) return embeddingModel
+  if (!embeddingModelReady) return null
+  return embeddingModelReady
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i]
+    normA += a[i] * a[i]
+    normB += b[i] * b[i]
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+async function embedText(text: string): Promise<number[] | null> {
+  const model = await getEmbeddingModel()
+  if (!model) return null
+  const output = await model(text, { pooling: 'mean', normalize: true })
+  return Array.from(output.data as Float32Array)
+}
+
+async function embeddingSearch(query: string, limit: number): Promise<MemoryEntry[]> {
+  const queryEmbedding = await embedText(query)
+  if (!queryEmbedding) return []
+
+  const db = getDb()
+  const rows = db.prepare(
+    "SELECT * FROM memory_entries WHERE layer = 'L1' AND status = 'active' AND embedding IS NOT NULL"
+  ).all() as Record<string, unknown>[]
+
+  if (rows.length === 0) return []
+
+  const SIMILARITY_THRESHOLD = 0.35
+  const scored = rows
+    .map(row => {
+      const stored = JSON.parse(row.embedding as string) as number[]
+      const score = cosineSimilarity(queryEmbedding, stored)
+      return { row, score }
+    })
+    .filter(item => item.score >= SIMILARITY_THRESHOLD)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+
+  return scored.map(item => rowToMemory(item.row))
+}
+
+/** Compute and store embedding for a memory entry (call at write/update time) */
+export async function embedMemoryEntry(id: string): Promise<void> {
+  const db = getDb()
+  const row = db.prepare("SELECT content FROM memory_entries WHERE id = ?").get(id) as { content: string } | undefined
+  if (!row) return
+
+  const embedding = await embedText(row.content)
+  if (!embedding) return
+
+  db.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run(JSON.stringify(embedding), id)
 }
 
 // === CRUD ===
@@ -210,6 +328,10 @@ export function updateMemory(id: string, content: string): boolean {
   const db = getDb()
   const info = db.prepare('UPDATE memory_entries SET content = ?, updated_at = ? WHERE id = ?')
     .run(content, new Date().toISOString(), id)
+  if (info.changes > 0) {
+    // Re-embed asynchronously
+    embedMemoryEntry(id).catch(() => {})
+  }
   return info.changes > 0
 }
 
@@ -224,12 +346,4 @@ export function markMemoryInactive(id: string): boolean {
   const info = db.prepare("UPDATE memory_entries SET status = 'inactive', updated_at = ? WHERE id = ?")
     .run(new Date().toISOString(), id)
   return info.changes > 0
-}
-
-// === Archive (L2) — Session End Extraction ===
-
-export function archiveFromSession(sessionId: string, extractedFacts: string[]): void {
-  for (const fact of extractedFacts) {
-    writeMemory({ content: fact, layer: 'L2', source: 'system' })
-  }
 }

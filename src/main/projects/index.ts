@@ -10,7 +10,6 @@ function rowToProject(row: Record<string, unknown>): Project {
     repoPath: row.repo_path as string | null,
     docsPath: row.docs_path as string | null,
     techStack: row.tech_stack as string | null,
-    team: JSON.parse(row.team as string),
     notes: row.notes as string | null,
     source: (row.source as 'user' | 'agent') || 'user',
     createdAt: row.created_at as string,
@@ -36,8 +35,8 @@ export function createProject(input: CreateProjectInput): Project {
   const id = uuid()
 
   db.prepare(`
-    INSERT INTO projects (id, name, description, repo_path, docs_path, tech_stack, team, notes, source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO projects (id, name, description, repo_path, docs_path, tech_stack, notes, source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.name,
@@ -45,7 +44,6 @@ export function createProject(input: CreateProjectInput): Project {
     input.repoPath || null,
     input.docsPath || null,
     input.techStack || null,
-    JSON.stringify(input.team || []),
     input.notes || null,
     input.source || 'user',
     now,
@@ -66,7 +64,6 @@ export function updateProject(id: string, changes: Partial<Project>): Project {
   if (changes.repoPath !== undefined) { sets.push('repo_path = ?'); params.push(changes.repoPath) }
   if (changes.docsPath !== undefined) { sets.push('docs_path = ?'); params.push(changes.docsPath) }
   if (changes.techStack !== undefined) { sets.push('tech_stack = ?'); params.push(changes.techStack) }
-  if (changes.team !== undefined) { sets.push('team = ?'); params.push(JSON.stringify(changes.team)) }
   if (changes.notes !== undefined) { sets.push('notes = ?'); params.push(changes.notes) }
 
   params.push(id)

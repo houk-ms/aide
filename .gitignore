@@ -3,6 +3,7 @@ dist/
 out/
 release/
 tmp/
+models/
 *.db
 *.sqlite
 .env

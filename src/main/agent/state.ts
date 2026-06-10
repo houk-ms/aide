@@ -3,9 +3,14 @@
 // and which task IDs were created during this session (to prevent self-completion).
 
 export let isJobSession = false
+export let currentSessionId = ''
 export const jobCreatedTaskIds = new Set<string>()
 
 export function setJobSession(value: boolean): void {
   isJobSession = value
   if (value) jobCreatedTaskIds.clear()
+}
+
+export function setCurrentSessionId(id: string): void {
+  currentSessionId = id
 }

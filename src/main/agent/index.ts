@@ -1,10 +1,10 @@
-import { getL0Content, searchMemory, writeMemory } from '../memory'
+import { getL0Content, searchMemory } from '../memory'
 import { createTask, updateTask, listTasks, getTask } from '../tasks'
-import { getProject } from '../projects'
-import { listRelations, getRelation } from '../relations'
+import { getProject, listProjects } from '../projects'
 import { getAutonomyLevel } from '../preferences'
 import { getConnectionStatus } from '../connections'
 import { getSkillsDirectory } from '../skills'
+import { saveChatAttachment } from '../files'
 import { showSystemNotification } from '../index'
 import type { ChatMessage, Task, PendingAction, TurnStep } from '@shared/types'
 import { v4 as uuid } from 'uuid'
@@ -89,6 +89,7 @@ function extractTaskIdFromSession(sessionId: string): string | null {
 const hooks: SessionConfig['hooks'] = {
   // Inject L0 Identity + dynamic context
   onSessionStart: async (_input: any, invocation: { sessionId: string }) => {
+    setCurrentSessionId(invocation.sessionId)
     const l0 = getL0Content()
     const taskId = extractTaskIdFromSession(invocation.sessionId)
     const parts: string[] = []
@@ -99,73 +100,81 @@ const hooks: SessionConfig['hooks'] = {
       const task = getTask(taskId)
       if (task) {
         parts.push(formatTaskContext(task))
-        if (task.projectId) {
-          const project = getProject(task.projectId)
-          if (project) parts.push(formatProjectContext(project))
-        }
-        if (task.relatedRelationIds.length > 0) {
-          const rels = task.relatedRelationIds.map(id => getRelation(id)).filter(Boolean)
-          if (rels.length) parts.push(formatRelationsContext(rels as any[]))
+        // Load linked projects
+        if (task.projectIds.length > 0) {
+          const projects = task.projectIds.map(id => getProject(id)).filter(Boolean) as any[]
+          if (projects.length > 0) {
+            parts.push(projects.map(p => formatProjectContext(p)).join('\n\n'))
+          }
         }
       }
     } else if (invocation.sessionId === 'general') {
-      // General chat: inject workspace awareness (task summary + connection status)
+      // General chat: inject workspace awareness (task summary + connection status + projects)
       const conns = getConnectionStatus()
       const connSummary = conns.map(c =>
         `- ${c.type}: ${c.authenticated ? `✓ connected${c.activeAccount ? ` (${c.activeAccount})` : ''}` : '✗ not connected'}${c.lastError ? ` [error: ${c.lastError}]` : ''}`
       ).join('\n')
       parts.push(`## Connection status\n${connSummary}`)
 
-      // Brief task overview
+      // Brief task overview with titles so agent can match user messages to tasks
       const allTasks = listTasks({})
-      const pendingCount = allTasks.filter(t => t.status === 'pending' || t.status === 'in_progress').length
-      const p0Count = allTasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && t.priority === 'p0').length
-      const unseenCount = allTasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && !t.seenAt).length
-      if (pendingCount > 0) {
-        parts.push(`## Tasks overview\nActive tasks: ${pendingCount}${p0Count > 0 ? ` (${p0Count} urgent)` : ''}${unseenCount > 0 ? `, ${unseenCount} unread` : ''}`)
+      const activeTasks = allTasks.filter(t => t.status === 'pending' || t.status === 'in_progress')
+      if (activeTasks.length > 0) {
+        const taskLines = activeTasks.slice(0, 10).map(t =>
+          `- id: "${t.id}" | "${t.title}" | ${t.status}${t.priority === 'p0' ? ' | URGENT' : ''}`
+        ).join('\n')
+        parts.push(`## Active tasks\n${taskLines}`)
+      }
+
+      // Inject project list for task-project linking
+      const projects = listProjects()
+      if (projects.length > 0) {
+        const projectList = projects.map(p => `- id: "${p.id}" | name: "${p.name}"${p.repoPath ? ` | repo: "${p.repoPath}"` : ''}`).join('\n')
+        parts.push(`## Available projects\n${projectList}`)
       }
     }
 
     // Token budget: ~3K total. Fixed prompt ~1K, L0 ~0.5K, dynamic ~1K
-    // Truncation priority: Task > Relation > Project > L1
+    // Truncation priority: Task > Project > L1
     return { additionalContext: parts.join('\n\n') }
   },
 
   // Inject L1 Knowledge — FTS5 retrieval based on the user message
-  // Also tracks interaction count for periodic memory flush (since infinite sessions never trigger onSessionEnd)
   onUserPromptSubmitted: async (input: any, invocation: { sessionId: string }) => {
-    // Track interaction count and periodically flush a session context marker to L2
-    const count = (sessionInteractionCount.get(invocation.sessionId) || 0) + 1
-    sessionInteractionCount.set(invocation.sessionId, count)
-    if (count % MEMORY_FLUSH_INTERVAL === 0) {
-      const taskId = extractTaskIdFromSession(invocation.sessionId)
-      writeMemory({
-        content: `[Session Checkpoint] session=${invocation.sessionId}, ${count} interactions. Recent topic: ${input.prompt.slice(0, 200)}`,
-        layer: 'L2',
-        source: 'system',
-        taskId: taskId || undefined
-      })
+    // Keep session ID current (onSessionStart only fires once, but user switches between sessions)
+    setCurrentSessionId(invocation.sessionId)
+
+    const contextParts: string[] = []
+
+    // If in a task session, inject the CURRENT working_state every turn
+    // (it may have been updated externally from general chat since onSessionStart)
+    const taskId = extractTaskIdFromSession(invocation.sessionId)
+    if (taskId) {
+      const task = getTask(taskId)
+      if (task?.workingState) {
+        contextParts.push(`<working-state>\n${task.workingState}\n</working-state>`)
+      }
     }
 
-    const memories = searchMemory(input.prompt, 5)
-    if (memories.length === 0) return {}
-    const block = memories.map(m => `- [id: ${m.id}] ${m.content}`).join('\n')
-    return { modifiedPrompt: `<memory-context>\nRelevant memories (use the id with memory_write update/remove if one is wrong):\n${block}\n</memory-context>\n\n${input.prompt}` }
+    const memories = await searchMemory(input.prompt, 5)
+    if (memories.length > 0) {
+      const block = memories.map(m => `- [id: ${m.id}] ${m.content}`).join('\n')
+      contextParts.push(`<memory-context>\nRelevant memories (use the id with memory_write update/remove if one is wrong):\n${block}\n</memory-context>`)
+    }
+
+    if (contextParts.length === 0) return {}
+    return { modifiedPrompt: `${contextParts.join('\n\n')}\n\n${input.prompt}` }
   },
 
-  // On session end: extract summary → L2, plus catch-up extraction
-  onSessionEnd: async (input: any, invocation: { sessionId: string }) => {
-    if (input.reason === 'complete' || input.reason === 'user_exit') {
-      const taskId = extractTaskIdFromSession(invocation.sessionId)
-
-      // Archive session summary to L2
-      if (input.finalMessage) {
-        writeMemory({
-          content: `[Session Summary] ${input.finalMessage}`,
-          layer: 'L2',
-          source: 'system',
-          taskId: taskId || undefined
-        })
+  // On session end — compact working_state if too long
+  onSessionEnd: async (_input: any, invocation: { sessionId: string }) => {
+    const taskId = extractTaskIdFromSession(invocation.sessionId)
+    if (taskId) {
+      const task = getTask(taskId)
+      if (task?.workingState && task.workingState.length > 1500) {
+        // Truncate to keep the most recent content (last 800 chars with a marker)
+        const truncated = '...(earlier context compressed)\n' + task.workingState.slice(-800)
+        updateTask(taskId, { workingState: truncated })
       }
     }
     return {}
@@ -286,9 +295,6 @@ let activeTurnSteps: TurnStep[] | null = null
 let activeTurnSignal: { toolStart: () => void; toolEnd: () => void } | null = null
 // Track sessions where task has been auto-promoted to in_progress
 const activatedTaskSessions = new Set<string>()
-// Track interaction count per session for periodic memory flush
-const sessionInteractionCount = new Map<string, number>()
-const MEMORY_FLUSH_INTERVAL = 10 // Flush every N user messages
 
 // === Permission Handler (category-level authorization) ===
 
@@ -417,19 +423,22 @@ Use Aide's task tools (create_aide_task, update_aide_task, query_aide_tasks) for
 
 **De-dup**: before creating, confirm no identical task already exists (the system injects the existing task list). Pass sourceId for exact de-dup.
 
-## Contacts & projects
+## Projects
 
 Be restrained. Quality over quantity.
-- Contacts: only record people the user has direct, substantive dealings with. Don't record people in a group who never interacted with the user. Test: will this person still matter next week?
 - Projects: must map to a real repo (has a GitHub URL or local path). Don't create abstract concepts.
 - Don't record on first sight; create only after it proves important or recurring.
 
 ## Memory
-- Record: user corrections, preferences, stable facts, relationships
-- Don't record: transient state, info that expires quickly
+- Record: user corrections (highest priority), stable preferences, conventions, recurring people (one card per person)
+- Format: one-liner declarative facts. People: "Name: role. Key traits."
+- Before adding: search first → update if same subject exists → add only if new
+- Do NOT record in memory: task progress, event logistics (dates/times/venues/budgets/attendees), scheduling info, session logs, one-off mentions. These belong in the task's working_state.
+- If information is tied to a specific task or event that will expire → put it in working_state, NOT memory
+- Use update_aide_task with working_state for task-specific progress, event details, and outputs
 
 ## Context awareness
-- In general chat, if something relates to an existing Task → suggest switching to it
+- In general chat, if something relates to an existing Task → immediately call update_aide_task to record the progress/info in that task's working_state. Don't just suggest switching — update the task right there.
 - When entering a Task chat → briefly state the task's background, status, and suggested handling`
 }
 
@@ -617,23 +626,27 @@ export async function sendMessage(
     role: 'user',
     content: userMessage,
     timestamp: new Date().toISOString(),
-    taskId
+    taskId,
+    attachments: attachments && attachments.length > 0 ? attachments : undefined
   }
   saveMessage(userMsg)
 
   const session = await getOrCreateSession(taskId)
   activeSession = session
 
-  // Build the prompt (attachments are appended inline)
+  // Build the prompt. Attachments are written into the session sandbox and
+  // referenced by path, so the agent reads them with its native file tools
+  // (inlining base64 wastes tokens and the model can't parse it anyway).
   let prompt = userMessage
   if (attachments && attachments.length > 0) {
-    const attachmentDescriptions = attachments.map(a => {
-      if (a.type.startsWith('image/')) {
-        return `[Attachment: image "${a.name}" (${a.type}), data: ${a.dataUrl}]`
-      }
-      return `[Attachment: file "${a.name}" (${a.type})]`
+    const lines = attachments.map(a => {
+      const saved = saveChatAttachment(taskId, a.name, a.dataUrl)
+      const type = a.type || 'unknown type'
+      return saved
+        ? `- "${a.name}" (${type}): ${saved.absPath}`
+        : `- "${a.name}" (${type}): [attachment could not be saved]`
     }).join('\n')
-    prompt = `${userMessage}\n\n${attachmentDescriptions}`
+    prompt = `${userMessage}\n\nThe user attached the following file(s), saved to disk. Read them as needed to answer:\n${lines}`
   }
 
   // Run the turn via the event stream (not a blocking total-duration timeout).
@@ -719,7 +732,7 @@ const jobHooks = {
   }
 }
 
-import { setJobSession } from './state'
+import { setJobSession, setCurrentSessionId } from './state'
 
 export async function executeJobSession(instruction: string, jobId: string, lastRunAt?: string | null): Promise<string> {
   if (!client) throw sdkUnavailableError()
@@ -729,12 +742,13 @@ export async function executeJobSession(instruction: string, jobId: string, last
     'periodic-poll': 300_000,      // 5 min — checks new items, creates tasks
     'morning-briefing': 480_000,   // 8 min — scans all sources, creates many tasks
     'eod-review': 300_000,         // 5 min — reviews today's tasks
-    'world-sync': 600_000,         // 10 min — full relation/project sync
+    'world-sync': 600_000,         // 10 min — full project sync
   }
   const timeoutMs = JOB_TIMEOUTS[jobId] || 300_000
 
   const sessionId = `job-${jobId}-${Date.now()}`
   setJobSession(true)
+  setCurrentSessionId(sessionId)
   try {
     const session = await client.createSession({
       sessionId,
@@ -778,8 +792,8 @@ export async function generateMorningBriefing(): Promise<string> {
 function saveMessage(msg: ChatMessage): void {
   const db = getDb()
   db.prepare(`
-    INSERT INTO chat_messages (id, role, content, timestamp, task_id, pending_action, process)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO chat_messages (id, role, content, timestamp, task_id, pending_action, process, attachments)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id,
     msg.role,
@@ -787,7 +801,8 @@ function saveMessage(msg: ChatMessage): void {
     msg.timestamp,
     msg.taskId,
     msg.pendingAction ? JSON.stringify(msg.pendingAction) : null,
-    msg.process && msg.process.length ? JSON.stringify(msg.process) : null
+    msg.process && msg.process.length ? JSON.stringify(msg.process) : null,
+    msg.attachments && msg.attachments.length ? JSON.stringify(msg.attachments) : null
   )
 }
 
@@ -822,7 +837,8 @@ export function getChatHistory(taskId: string | null): ChatMessage[] {
     timestamp: row.timestamp as string,
     taskId: row.task_id as string | null,
     pendingAction: row.pending_action ? JSON.parse(row.pending_action as string) : undefined,
-    process: row.process ? JSON.parse(row.process as string) : undefined
+    process: row.process ? JSON.parse(row.process as string) : undefined,
+    attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined
   }))
 }
 
@@ -900,18 +916,19 @@ function formatTaskContext(task: Task): string {
   if (task.description) lines.push(`- Description: ${task.description}`)
   if (task.dueDate) lines.push(`- Due: ${task.dueDate}`)
   if (task.source.externalUrl) lines.push(`- Source: ${task.source.externalUrl}`)
+  if (task.workingState) lines.push(`\n## Working state\n${task.workingState}`)
+  if (!task.projectIds.length) lines.push(`\n> This task has no linked project. If you can determine which project(s) it belongs to, call update_aide_task to set projectIds.`)
   lines.push(`\n> The user is in this task's chat. You can operate on it directly with update_aide_task(id: "${task.id}", ...).`)
   return lines.join('\n')
 }
 
-function formatProjectContext(p: { name: string; description: string; techStack: string | null }): string {
-  return `## Related project: ${p.name}\n${p.description}${p.techStack ? `\nTech stack: ${p.techStack}` : ''}`
-}
-
-function formatRelationsContext(rels: Array<{ name: string; role: string; expertise: string[]; communicationStyle: string | null }>): string {
-  return '## Related people\n' + rels.map(r =>
-    `- ${r.name} (${r.role})${r.expertise.length ? ' — ' + r.expertise.join(', ') : ''}${r.communicationStyle ? ' — ' + r.communicationStyle : ''}`
-  ).join('\n')
+function formatProjectContext(p: { name: string; description: string; repoPath: string | null; docsPath: string | null; techStack: string | null }): string {
+  const lines = [`## Project: ${p.name}`]
+  if (p.description) lines.push(p.description)
+  if (p.repoPath) lines.push(`Repo: ${p.repoPath}`)
+  if (p.docsPath) lines.push(`Docs: ${p.docsPath}`)
+  if (p.techStack) lines.push(`Tech stack: ${p.techStack}`)
+  return lines.join('\n')
 }
 
 function emitEvent(event: { type: string; [key: string]: unknown }): void {
@@ -956,20 +973,4 @@ function truncatePreview(value: string, max = 160): string | undefined {
   const compact = value.replace(/\s+/g, ' ').trim()
   if (!compact) return undefined
   return compact.length > max ? compact.slice(0, max - 1) + '…' : compact
-}
-
-// === Relation cleanup helper ===
-
-export function cleanupRelationReferences(relationId: string): void {
-  const db = getDb()
-  const rows = db.prepare(
-    "SELECT id, related_relation_ids FROM tasks WHERE related_relation_ids LIKE ?"
-  ).all(`%${relationId}%`) as { id: string; related_relation_ids: string }[]
-
-  for (const row of rows) {
-    const ids: string[] = JSON.parse(row.related_relation_ids)
-    const filtered = ids.filter(id => id !== relationId)
-    db.prepare('UPDATE tasks SET related_relation_ids = ? WHERE id = ?')
-      .run(JSON.stringify(filtered), row.id)
-  }
 }
