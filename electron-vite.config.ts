@@ -11,8 +11,12 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        // Native modules that must not be bundled
-        external: ['@nut-tree-fork/nut-js', '@nut-tree-fork/libnut']
+        // Native modules that must not be bundled:
+        // - nut-js: desktop automation native bindings
+        external: [
+          '@nut-tree-fork/nut-js',
+          '@nut-tree-fork/libnut'
+        ]
       }
     }
   },

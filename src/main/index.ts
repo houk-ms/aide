@@ -1,3 +1,8 @@
+// Disable ws native deps (bufferutil/utf-8-validate) — they require compilation
+// with matching Python/VS versions that are often unavailable. ws works fine without them.
+process.env.WS_NO_BUFFER_UTIL = '1'
+process.env.WS_NO_UTF_8_VALIDATE = '1'
+
 import { app, BrowserWindow, Menu, Notification, nativeImage, shell } from 'electron'
 import { join } from 'path'
 import { registerIpcHandlers } from './ipc'

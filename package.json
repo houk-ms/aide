@@ -18,7 +18,7 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux",
-    "postinstall": "electron-builder install-app-deps && npx playwright install chromium"
+    "postinstall": "npx @electron/rebuild --only better-sqlite3"
   },
   "dependencies": {
     "@github/copilot-sdk": "^1.0.0",

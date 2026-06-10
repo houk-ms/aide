@@ -147,7 +147,7 @@ export interface Skill {
 
 // === Marketplace ===
 
-export type MarketplaceSourceType = 'official' | 'community'
+export type MarketplaceSourceType = 'official' | 'community' | 'local'
 
 export interface MarketplaceSource {
   id: string
