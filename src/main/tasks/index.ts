@@ -1,6 +1,19 @@
 import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
-import type { Task, TaskFilter, CreateTaskInput, TaskStatus, Priority, TaskActivity, TaskActivityType } from '@shared/types'
+import { listProjects } from '../projects'
+import type { Task, TaskFilter, CreateTaskInput, TaskStatus, Priority, TaskActivity, TaskActivityType, Project } from '@shared/types'
+
+/** Auto-match projects by keyword when task has no explicit projectIds */
+function inferProjects(title: string, description: string, projects: Project[]): string[] {
+  const text = `${title} ${description}`.toLowerCase()
+  return projects
+    .filter(p => {
+      const terms = [p.name.toLowerCase()]
+      if (p.repoPath) terms.push(p.repoPath.split('/').pop()!.toLowerCase())
+      return terms.some(t => t.length > 2 && text.includes(t))
+    })
+    .map(p => p.id)
+}
 
 function rowToTask(row: Record<string, unknown>): Task {
   return {
@@ -15,7 +28,7 @@ function rowToTask(row: Record<string, unknown>): Task {
       externalId: row.source_external_id as string | undefined,
       externalUrl: row.source_external_url as string | undefined
     },
-    projectId: row.project_id as string | null,
+    projectIds: JSON.parse((row.project_ids as string) || '[]'),
     relatedRelationIds: JSON.parse(row.related_relation_ids as string),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -25,6 +38,7 @@ function rowToTask(row: Record<string, unknown>): Task {
     snoozedUntil: row.snoozed_until as string | null,
     sessionId: row.session_id as string | null,
     result: row.result as string | null,
+    workingState: (row.working_state as string | null) ?? null,
     lastActivityAt: (row.last_activity_at as string | null) ?? null
   }
 }
@@ -59,8 +73,8 @@ export function listTasks(filter?: TaskFilter): Task[] {
   }
 
   if (filter?.projectId) {
-    sql += ' AND project_id = ?'
-    params.push(filter.projectId)
+    sql += " AND project_ids LIKE '%' || ? || '%'"
+    params.push(`"${filter.projectId}"`)
   }
 
   if (!filter?.includeSnoozed) {
@@ -106,8 +120,17 @@ export function createTask(input: CreateTaskInput): CreateTaskResult {
 
   const priority = input.priority || 'p1'
 
+  // Auto-infer projects if none explicitly set
+  let projectIds = input.projectIds || []
+  if (projectIds.length === 0) {
+    const allProjects = listProjects()
+    if (allProjects.length > 0) {
+      projectIds = inferProjects(input.title, input.description || '', allProjects)
+    }
+  }
+
   db.prepare(`
-    INSERT INTO tasks (id, title, description, status, priority, source_type, source_connection_id, source_external_id, source_external_url, project_id, related_relation_ids, created_at, updated_at, due_date)
+    INSERT INTO tasks (id, title, description, status, priority, source_type, source_connection_id, source_external_id, source_external_url, project_ids, related_relation_ids, created_at, updated_at, due_date)
     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
@@ -118,7 +141,7 @@ export function createTask(input: CreateTaskInput): CreateTaskResult {
     input.source.connectionId || null,
     input.source.externalId || null,
     input.source.externalUrl || null,
-    input.projectId || null,
+    JSON.stringify(projectIds),
     JSON.stringify(input.relatedRelationIds || []),
     now,
     now,
@@ -155,13 +178,14 @@ export function updateTask(id: string, changes: Partial<Task>): Task {
     }
   }
   if (changes.priority !== undefined) { sets.push('priority = ?'); params.push(changes.priority) }
-  if (changes.projectId !== undefined) { sets.push('project_id = ?'); params.push(changes.projectId) }
+  if (changes.projectIds !== undefined) { sets.push('project_ids = ?'); params.push(JSON.stringify(changes.projectIds)) }
   if (changes.relatedRelationIds !== undefined) { sets.push('related_relation_ids = ?'); params.push(JSON.stringify(changes.relatedRelationIds)) }
   if (changes.dueDate !== undefined) { sets.push('due_date = ?'); params.push(changes.dueDate) }
   if (changes.seenAt !== undefined) { sets.push('seen_at = ?'); params.push(changes.seenAt) }
   if (changes.snoozedUntil !== undefined) { sets.push('snoozed_until = ?'); params.push(changes.snoozedUntil) }
   if (changes.sessionId !== undefined) { sets.push('session_id = ?'); params.push(changes.sessionId) }
   if (changes.result !== undefined) { sets.push('result = ?'); params.push(changes.result) }
+  if (changes.workingState !== undefined) { sets.push('working_state = ?'); params.push(changes.workingState) }
 
   params.push(id)
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params)

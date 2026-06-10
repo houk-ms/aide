@@ -25,6 +25,9 @@ asarUnpack:
   - "**/node_modules/@github/copilot-linux-x64/**"
   - "**/node_modules/@github/copilot-linux-arm64/**"
   - "**/node_modules/playwright-core/**"
+  # transformers.js runs the embedding model through onnxruntime-node, whose
+  # native .node/.dll cannot be dlopen'd from inside app.asar — unpack it.
+  - "**/node_modules/onnxruntime-node/**"
 
 # Rebuild native modules (better-sqlite3) for the target platform.
 npmRebuild: true
@@ -33,6 +36,12 @@ npmRebuild: true
 extraResources:
   - from: "browsers"
     to: "browsers"
+    filter:
+      - "**/*"
+  # Local embedding model for semantic memory search, downloaded pre-build by
+  # scripts/fetch-model.mjs. Bundled so the feature works fully offline.
+  - from: "models"
+    to: "models"
     filter:
       - "**/*"
 

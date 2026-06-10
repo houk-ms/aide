@@ -53,8 +53,9 @@ function initSchema(db: DatabaseInstance): void {
       source_connection_id TEXT,
       source_external_id TEXT,
       source_external_url TEXT,
-      project_id TEXT,
+      project_ids TEXT NOT NULL DEFAULT '[]',
       related_relation_ids TEXT NOT NULL DEFAULT '[]',
+      working_state TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       due_date TEXT,
@@ -63,8 +64,7 @@ function initSchema(db: DatabaseInstance): void {
       snoozed_until TEXT,
       session_id TEXT,
       result TEXT,
-      last_activity_at TEXT,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      last_activity_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS task_activities (
@@ -92,6 +92,7 @@ function initSchema(db: DatabaseInstance): void {
       project_id TEXT,
       tags TEXT NOT NULL DEFAULT '[]',
       recall_count INTEGER NOT NULL DEFAULT 0,
+      embedding BLOB,
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
     );
@@ -179,7 +180,6 @@ function initSchema(db: DatabaseInstance): void {
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
-    CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_activity_task ON task_activities(task_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_memory_layer ON memory_entries(layer);
     CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_entries(status);
@@ -295,6 +295,32 @@ const MIGRATIONS: Migration[] = [
       if (!cols.includes('attachments')) {
         db.exec('ALTER TABLE chat_messages ADD COLUMN attachments TEXT')
       }
+    },
+  },
+  {
+    version: 5,
+    name: 'memory redesign: working_state, projectIds, embedding',
+    up: (db) => {
+      const taskCols = (db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map(c => c.name)
+      // Add working_state column
+      if (!taskCols.includes('working_state')) {
+        db.exec('ALTER TABLE tasks ADD COLUMN working_state TEXT')
+      }
+      // Migrate projectId → projectIds (JSON array)
+      if (taskCols.includes('project_id') && !taskCols.includes('project_ids')) {
+        db.exec("ALTER TABLE tasks ADD COLUMN project_ids TEXT NOT NULL DEFAULT '[]'")
+        // Migrate existing project_id values
+        db.exec("UPDATE tasks SET project_ids = json_array(project_id) WHERE project_id IS NOT NULL AND project_id != ''")
+      } else if (!taskCols.includes('project_ids')) {
+        db.exec("ALTER TABLE tasks ADD COLUMN project_ids TEXT NOT NULL DEFAULT '[]'")
+      }
+      // Add embedding column to memory_entries
+      const memCols = (db.prepare('PRAGMA table_info(memory_entries)').all() as { name: string }[]).map(c => c.name)
+      if (!memCols.includes('embedding')) {
+        db.exec('ALTER TABLE memory_entries ADD COLUMN embedding BLOB')
+      }
+      // Wipe L2 entries (broken checkpoint data)
+      db.exec("DELETE FROM memory_entries WHERE layer = 'L2'")
     },
   },
 ]

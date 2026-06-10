@@ -11,7 +11,7 @@ export interface Task {
   source: TaskSource
 
   // Relations
-  projectId: string | null
+  projectIds: string[]
   relatedRelationIds: string[]
 
   // Time
@@ -27,6 +27,7 @@ export interface Task {
   // Agent processing
   sessionId: string | null
   result: string | null
+  workingState: string | null
 
   // Progress timeline
   lastActivityAt?: string | null
@@ -72,7 +73,7 @@ export interface MemoryEntry {
   recallCount: number
 }
 
-export type MemoryLayer = 'L0' | 'L1' | 'L2'
+export type MemoryLayer = 'L0' | 'L1'
 export type MemorySource = 'agent' | 'system' | 'user'
 
 // === Project ===
@@ -433,7 +434,7 @@ export interface CreateTaskInput {
   description?: string
   priority?: Priority
   source: TaskSource
-  projectId?: string
+  projectIds?: string[]
   relatedRelationIds?: string[]
   dueDate?: string
 }

@@ -1,11 +1,11 @@
 import { writeMemory, searchMemory, updateMemory, markMemoryInactive } from '../memory'
-import { createTask, updateTask, listTasks, addTaskActivity, listTaskActivities, findRelatedTask } from '../tasks'
+import { createTask, updateTask, listTasks, getTask, addTaskActivity, listTaskActivities, findRelatedTask } from '../tasks'
 import { listProjects, createProject, updateProject, deleteProject } from '../projects'
 import { listRelations, createRelation, updateRelation, deleteRelation } from '../relations'
 import { getPreferences, setPreferences } from '../preferences'
 import { listJobs, createJob, updateJob, deleteJob, toggleJob } from '../jobs'
 import { showSystemNotification } from '../index'
-import { isJobSession, jobCreatedTaskIds } from './state'
+import { isJobSession, jobCreatedTaskIds, currentSessionId } from './state'
 import { getActiveMcpTools } from './mcp'
 import { browser, isBrowserAvailable } from '../automation'
 import { listSkills, installSkillFromLocalPath } from '../skills'
@@ -142,7 +142,18 @@ const listInstalledSkillsTool: Tool<any> = {
 
 const memoryWriteTool: Tool<any> = {
   name: 'memory_write',
-  description: 'Manage memory. action: add = record new info, update = correct an existing memory, remove = mark a wrong memory inactive. For update/remove you MUST pass the real target_id of an existing memory — get it from memory_search first (never guess an ID). When the user corrects you, search for the wrong memory, then update or remove it by its id before adding the corrected fact.',
+  description: `Manage long-term memory. Records stable knowledge about the user and their world.
+
+Rules:
+1. SEARCH FIRST — before adding, use memory_search to check if the fact already exists.
+2. UPDATE if same subject + same attribute exists (don't duplicate).
+3. Format: one-liner declarative facts ("User prefers X", "Alice: manager at Contoso, prefers async").
+4. People: one compact card per person. Only for recurring/important people.
+5. Do NOT store: task progress, event details (dates/times/venues/budgets/attendees), scheduling info, or anything that expires. Use update_aide_task working_state instead.
+6. Test before writing: "Will this fact still be true and useful in 2 weeks?" If not → working_state, not memory.
+
+Actions: add = new fact, update = correct existing, remove = mark wrong entry inactive.
+For update/remove: pass the real target_id from memory_search (never guess).`,
   parameters: {
     type: 'object',
     properties: {
@@ -188,7 +199,7 @@ const memorySearchTool: Tool<any> = {
   },
   skipPermission: true,
   handler: async (args: { query: string; limit?: number }) => {
-    const results = searchMemory(args.query, args.limit || 5)
+    const results = await searchMemory(args.query, args.limit || 5)
     if (results.length === 0) return { memories: [], message: 'No relevant memories found' }
     return {
       memories: results.map(m => ({
@@ -215,7 +226,7 @@ const createTaskTool: Tool<any> = {
       sourceId: { type: 'string', description: 'Unique source identifier (email ID, notification ID, message ID, PR/Issue number). Extract from MCP response data.' },
       sourceUrl: { type: 'string', description: 'External link to the source (PR/Issue URL, email/message deep link, etc.) for one-click navigation.' },
       dueDate: { type: 'string', description: 'ISO 8601 due date' },
-      projectId: { type: 'string', description: 'Associated project ID' },
+      projectIds: { type: 'array', items: { type: 'string' }, description: 'Associated project IDs' },
       relatedRelationIds: { type: 'array', items: { type: 'string' }, description: 'List of related people IDs' }
     },
     required: ['title', 'priority', 'description']
@@ -293,7 +304,7 @@ const createTaskTool: Tool<any> = {
 
 const updateTaskTool: Tool<any> = {
   name: 'update_aide_task',
-  description: 'Update an Aide task (the user\'s personal task tracker). Change status (complete/cancel), priority, title, etc.',
+  description: 'Update an Aide task. Change status, priority, title, working_state (progress/outputs), or link to projects.',
   parameters: {
     type: 'object',
     properties: {
@@ -301,13 +312,26 @@ const updateTaskTool: Tool<any> = {
       status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] },
       priority: { type: 'string', enum: ['p0', 'p1', 'p2'] },
       title: { type: 'string' },
-      description: { type: 'string' }
+      description: { type: 'string' },
+      working_state: { type: 'string', description: 'Current progress, decisions, outputs for this task. Updated in real-time as work progresses.' },
+      progress_summary: { type: 'string', description: 'One-sentence summary of what changed (logged to the activity timeline). Provide this whenever you update working_state.' },
+      projectIds: { type: 'array', items: { type: 'string' }, description: 'Project IDs this task relates to' }
     },
     required: ['id']
   },
   skipPermission: true,
   handler: async (args: any) => {
-    const { id, ...changes } = args
+    const { id, working_state, progress_summary, projectIds, ...changes } = args
+    if (working_state !== undefined) changes.workingState = working_state
+    if (projectIds !== undefined) changes.projectIds = projectIds
+
+    // Auto-promote pending → in_progress when working_state is updated
+    if (changes.workingState !== undefined && !changes.status) {
+      const current = getTask(id)
+      if (current && current.status === 'pending') {
+        changes.status = 'in_progress'
+      }
+    }
 
     // Prevent jobs from completing tasks they JUST created in the same session (anti-self-completion)
     // But allow completing pre-existing tasks based on new external info (e.g. PR merged → task done)
@@ -319,6 +343,13 @@ const updateTaskTool: Tool<any> = {
 
     const task = updateTask(id, changes)
     emitToRenderer({ type: 'task:updated', task })
+
+    // Auto-log progress activity when working_state is updated with a summary
+    if (changes.workingState !== undefined && progress_summary) {
+      const activity = addTaskActivity(id, { type: 'progress', summary: progress_summary })
+      emitToRenderer({ type: 'task:activity', taskId: id, activity })
+    }
+
     return { success: true, task: { id: task.id, title: task.title, status: task.status } }
   }
 }
@@ -352,7 +383,7 @@ const findRelatedTaskTool: Tool<any> = {
 
 const addTaskActivityTool: Tool<any> = {
   name: 'add_task_activity',
-  description: 'Record one "substantive update" for an existing task. The bar is strict: only record when things actually moved forward, got blocked, changed status, or require the user\'s direct response. Pleasantries / acknowledgements / forwards / CCs / bot notifications / minor wording tweaks are never recorded. Record each update only once (check first with get_task_activities). summary must state "what substantive thing happened", not paraphrase the raw message.',
+  description: 'Record a substantive update on a task. Use for real progress, blockers, or comments needing user response. Do not record pleasantries, acknowledgements, or bot notifications.',
   parameters: {
     type: 'object',
     properties: {

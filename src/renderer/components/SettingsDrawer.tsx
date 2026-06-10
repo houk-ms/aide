@@ -1200,7 +1200,7 @@ function MemoryTab() {
 
   const loadMemories = async () => {
     setLoading(true)
-    const list = await window.aide.memory.list({ layer: ['L1', 'L2'], status: 'active' })
+    const list = await window.aide.memory.list({ layer: ['L1'], status: 'active' })
     setMemories(list)
     setLoading(false)
   }

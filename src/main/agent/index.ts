@@ -1,6 +1,6 @@
-import { getL0Content, searchMemory, writeMemory } from '../memory'
+import { getL0Content, searchMemory } from '../memory'
 import { createTask, updateTask, listTasks, getTask } from '../tasks'
-import { getProject } from '../projects'
+import { getProject, listProjects } from '../projects'
 import { listRelations, getRelation } from '../relations'
 import { getAutonomyLevel } from '../preferences'
 import { getConnectionStatus } from '../connections'
@@ -90,6 +90,7 @@ function extractTaskIdFromSession(sessionId: string): string | null {
 const hooks: SessionConfig['hooks'] = {
   // Inject L0 Identity + dynamic context
   onSessionStart: async (_input: any, invocation: { sessionId: string }) => {
+    setCurrentSessionId(invocation.sessionId)
     const l0 = getL0Content()
     const taskId = extractTaskIdFromSession(invocation.sessionId)
     const parts: string[] = []
@@ -100,9 +101,12 @@ const hooks: SessionConfig['hooks'] = {
       const task = getTask(taskId)
       if (task) {
         parts.push(formatTaskContext(task))
-        if (task.projectId) {
-          const project = getProject(task.projectId)
-          if (project) parts.push(formatProjectContext(project))
+        // Load linked projects
+        if (task.projectIds.length > 0) {
+          const projects = task.projectIds.map(id => getProject(id)).filter(Boolean) as any[]
+          if (projects.length > 0) {
+            parts.push(projects.map(p => formatProjectContext(p)).join('\n\n'))
+          }
         }
         if (task.relatedRelationIds.length > 0) {
           const rels = task.relatedRelationIds.map(id => getRelation(id)).filter(Boolean)
@@ -110,20 +114,28 @@ const hooks: SessionConfig['hooks'] = {
         }
       }
     } else if (invocation.sessionId === 'general') {
-      // General chat: inject workspace awareness (task summary + connection status)
+      // General chat: inject workspace awareness (task summary + connection status + projects)
       const conns = getConnectionStatus()
       const connSummary = conns.map(c =>
         `- ${c.type}: ${c.authenticated ? `✓ connected${c.activeAccount ? ` (${c.activeAccount})` : ''}` : '✗ not connected'}${c.lastError ? ` [error: ${c.lastError}]` : ''}`
       ).join('\n')
       parts.push(`## Connection status\n${connSummary}`)
 
-      // Brief task overview
+      // Brief task overview with titles so agent can match user messages to tasks
       const allTasks = listTasks({})
-      const pendingCount = allTasks.filter(t => t.status === 'pending' || t.status === 'in_progress').length
-      const p0Count = allTasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && t.priority === 'p0').length
-      const unseenCount = allTasks.filter(t => (t.status === 'pending' || t.status === 'in_progress') && !t.seenAt).length
-      if (pendingCount > 0) {
-        parts.push(`## Tasks overview\nActive tasks: ${pendingCount}${p0Count > 0 ? ` (${p0Count} urgent)` : ''}${unseenCount > 0 ? `, ${unseenCount} unread` : ''}`)
+      const activeTasks = allTasks.filter(t => t.status === 'pending' || t.status === 'in_progress')
+      if (activeTasks.length > 0) {
+        const taskLines = activeTasks.slice(0, 10).map(t =>
+          `- id: "${t.id}" | "${t.title}" | ${t.status}${t.priority === 'p0' ? ' | URGENT' : ''}`
+        ).join('\n')
+        parts.push(`## Active tasks\n${taskLines}`)
+      }
+
+      // Inject project list for task-project linking
+      const projects = listProjects()
+      if (projects.length > 0) {
+        const projectList = projects.map(p => `- id: "${p.id}" | name: "${p.name}"${p.repoPath ? ` | repo: "${p.repoPath}"` : ''}`).join('\n')
+        parts.push(`## Available projects\n${projectList}`)
       }
     }
 
@@ -133,40 +145,41 @@ const hooks: SessionConfig['hooks'] = {
   },
 
   // Inject L1 Knowledge — FTS5 retrieval based on the user message
-  // Also tracks interaction count for periodic memory flush (since infinite sessions never trigger onSessionEnd)
   onUserPromptSubmitted: async (input: any, invocation: { sessionId: string }) => {
-    // Track interaction count and periodically flush a session context marker to L2
-    const count = (sessionInteractionCount.get(invocation.sessionId) || 0) + 1
-    sessionInteractionCount.set(invocation.sessionId, count)
-    if (count % MEMORY_FLUSH_INTERVAL === 0) {
-      const taskId = extractTaskIdFromSession(invocation.sessionId)
-      writeMemory({
-        content: `[Session Checkpoint] session=${invocation.sessionId}, ${count} interactions. Recent topic: ${input.prompt.slice(0, 200)}`,
-        layer: 'L2',
-        source: 'system',
-        taskId: taskId || undefined
-      })
+    // Keep session ID current (onSessionStart only fires once, but user switches between sessions)
+    setCurrentSessionId(invocation.sessionId)
+
+    const contextParts: string[] = []
+
+    // If in a task session, inject the CURRENT working_state every turn
+    // (it may have been updated externally from general chat since onSessionStart)
+    const taskId = extractTaskIdFromSession(invocation.sessionId)
+    if (taskId) {
+      const task = getTask(taskId)
+      if (task?.workingState) {
+        contextParts.push(`<working-state>\n${task.workingState}\n</working-state>`)
+      }
     }
 
-    const memories = searchMemory(input.prompt, 5)
-    if (memories.length === 0) return {}
-    const block = memories.map(m => `- [id: ${m.id}] ${m.content}`).join('\n')
-    return { modifiedPrompt: `<memory-context>\nRelevant memories (use the id with memory_write update/remove if one is wrong):\n${block}\n</memory-context>\n\n${input.prompt}` }
+    const memories = await searchMemory(input.prompt, 5)
+    if (memories.length > 0) {
+      const block = memories.map(m => `- [id: ${m.id}] ${m.content}`).join('\n')
+      contextParts.push(`<memory-context>\nRelevant memories (use the id with memory_write update/remove if one is wrong):\n${block}\n</memory-context>`)
+    }
+
+    if (contextParts.length === 0) return {}
+    return { modifiedPrompt: `${contextParts.join('\n\n')}\n\n${input.prompt}` }
   },
 
-  // On session end: extract summary → L2, plus catch-up extraction
-  onSessionEnd: async (input: any, invocation: { sessionId: string }) => {
-    if (input.reason === 'complete' || input.reason === 'user_exit') {
-      const taskId = extractTaskIdFromSession(invocation.sessionId)
-
-      // Archive session summary to L2
-      if (input.finalMessage) {
-        writeMemory({
-          content: `[Session Summary] ${input.finalMessage}`,
-          layer: 'L2',
-          source: 'system',
-          taskId: taskId || undefined
-        })
+  // On session end — compact working_state if too long
+  onSessionEnd: async (_input: any, invocation: { sessionId: string }) => {
+    const taskId = extractTaskIdFromSession(invocation.sessionId)
+    if (taskId) {
+      const task = getTask(taskId)
+      if (task?.workingState && task.workingState.length > 1500) {
+        // Truncate to keep the most recent content (last 800 chars with a marker)
+        const truncated = '...(earlier context compressed)\n' + task.workingState.slice(-800)
+        updateTask(taskId, { workingState: truncated })
       }
     }
     return {}
@@ -287,9 +300,6 @@ let activeTurnSteps: TurnStep[] | null = null
 let activeTurnSignal: { toolStart: () => void; toolEnd: () => void } | null = null
 // Track sessions where task has been auto-promoted to in_progress
 const activatedTaskSessions = new Set<string>()
-// Track interaction count per session for periodic memory flush
-const sessionInteractionCount = new Map<string, number>()
-const MEMORY_FLUSH_INTERVAL = 10 // Flush every N user messages
 
 // === Permission Handler (category-level authorization) ===
 
@@ -426,11 +436,15 @@ Be restrained. Quality over quantity.
 - Don't record on first sight; create only after it proves important or recurring.
 
 ## Memory
-- Record: user corrections, preferences, stable facts, relationships
-- Don't record: transient state, info that expires quickly
+- Record: user corrections (highest priority), stable preferences, conventions, recurring people (one card per person)
+- Format: one-liner declarative facts. People: "Name: role. Key traits."
+- Before adding: search first → update if same subject exists → add only if new
+- Do NOT record in memory: task progress, event logistics (dates/times/venues/budgets/attendees), scheduling info, session logs, one-off mentions. These belong in the task's working_state.
+- If information is tied to a specific task or event that will expire → put it in working_state, NOT memory
+- Use update_aide_task with working_state for task-specific progress, event details, and outputs
 
 ## Context awareness
-- In general chat, if something relates to an existing Task → suggest switching to it
+- In general chat, if something relates to an existing Task → immediately call update_aide_task to record the progress/info in that task's working_state. Don't just suggest switching — update the task right there.
 - When entering a Task chat → briefly state the task's background, status, and suggested handling`
 }
 
@@ -724,7 +738,7 @@ const jobHooks = {
   }
 }
 
-import { setJobSession } from './state'
+import { setJobSession, setCurrentSessionId } from './state'
 
 export async function executeJobSession(instruction: string, jobId: string, lastRunAt?: string | null): Promise<string> {
   if (!client) throw sdkUnavailableError()
@@ -740,6 +754,7 @@ export async function executeJobSession(instruction: string, jobId: string, last
 
   const sessionId = `job-${jobId}-${Date.now()}`
   setJobSession(true)
+  setCurrentSessionId(sessionId)
   try {
     const session = await client.createSession({
       sessionId,
@@ -907,12 +922,19 @@ function formatTaskContext(task: Task): string {
   if (task.description) lines.push(`- Description: ${task.description}`)
   if (task.dueDate) lines.push(`- Due: ${task.dueDate}`)
   if (task.source.externalUrl) lines.push(`- Source: ${task.source.externalUrl}`)
+  if (task.workingState) lines.push(`\n## Working state\n${task.workingState}`)
+  if (!task.projectIds.length) lines.push(`\n> This task has no linked project. If you can determine which project(s) it belongs to, call update_aide_task to set projectIds.`)
   lines.push(`\n> The user is in this task's chat. You can operate on it directly with update_aide_task(id: "${task.id}", ...).`)
   return lines.join('\n')
 }
 
-function formatProjectContext(p: { name: string; description: string; techStack: string | null }): string {
-  return `## Related project: ${p.name}\n${p.description}${p.techStack ? `\nTech stack: ${p.techStack}` : ''}`
+function formatProjectContext(p: { name: string; description: string; repoPath: string | null; docsPath: string | null; techStack: string | null }): string {
+  const lines = [`## Project: ${p.name}`]
+  if (p.description) lines.push(p.description)
+  if (p.repoPath) lines.push(`Repo: ${p.repoPath}`)
+  if (p.docsPath) lines.push(`Docs: ${p.docsPath}`)
+  if (p.techStack) lines.push(`Tech stack: ${p.techStack}`)
+  return lines.join('\n')
 }
 
 function formatRelationsContext(rels: Array<{ name: string; role: string; expertise: string[]; communicationStyle: string | null }>): string {

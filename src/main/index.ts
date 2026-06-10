@@ -16,6 +16,7 @@ import { stopMonitor as stopWeChatMonitor } from './wechat/messaging'
 import { initUpdater, stopUpdater } from './updater'
 import { setSdkHealth } from './health'
 import { getPreferences } from './preferences'
+import { initEmbeddingModel } from './memory'
 
 // Force English (US) locale so native controls (e.g. <input type="date">)
 // render as mm/dd/yyyy instead of following the OS locale (年/月/日).
@@ -113,6 +114,9 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   // Initialize database
   getDb()
+
+  // Start loading embedding model in background (non-blocking)
+  initEmbeddingModel()
 
   // Restore connection auth state from CLI tools
   await initConnectionState()
