@@ -27,11 +27,44 @@ jobs:
         run: npm ci
 
       # npm ci sometimes fails to install optional native bindings on Linux
-      # due to an npm bug. Force-install rollup, lightningcss, and sharp bindings.
+      # due to an npm bug. Use npm pack + extract to bypass npm's logic entirely.
       - name: Ensure native bindings
+        shell: bash
         run: |
-          npm install --no-save --force @rollup/rollup-linux-x64-gnu lightningcss-linux-x64-gnu @img/sharp-linux-x64
-          ls -la node_modules/lightningcss-linux-x64-gnu/ || echo "lightningcss not found"
+          set -euo pipefail
+          cd node_modules
+          
+          # lightningcss - required by tailwindcss/postcss
+          ver=$(node -p "require('./lightningcss/package.json').version")
+          echo "lightningcss version: $ver"
+          npm pack "lightningcss-linux-x64-gnu@${ver}" --quiet
+          mkdir -p lightningcss-linux-x64-gnu
+          tar -xzf lightningcss-linux-x64-gnu-*.tgz
+          mv package/* lightningcss-linux-x64-gnu/
+          rm -rf package lightningcss-linux-x64-gnu-*.tgz
+          
+          # rollup - required by vite
+          ver=$(node -p "require('./rollup/package.json').optionalDependencies['@rollup/rollup-linux-x64-gnu']")
+          echo "rollup version: $ver"
+          npm pack "@rollup/rollup-linux-x64-gnu@${ver}" --quiet
+          mkdir -p @rollup/rollup-linux-x64-gnu
+          tar -xzf rollup-rollup-linux-x64-gnu-*.tgz
+          mv package/* @rollup/rollup-linux-x64-gnu/
+          rm -rf package rollup-rollup-linux-x64-gnu-*.tgz
+          
+          # sharp - runtime image processing
+          ver=$(node -p "require('./sharp/package.json').optionalDependencies['@img/sharp-linux-x64']")
+          echo "sharp version: $ver"
+          npm pack "@img/sharp-linux-x64@${ver}" --quiet
+          mkdir -p @img/sharp-linux-x64
+          tar -xzf img-sharp-linux-x64-*.tgz
+          mv package/* @img/sharp-linux-x64/
+          rm -rf package img-sharp-linux-x64-*.tgz
+          
+          echo "Installed:"
+          ls lightningcss-linux-x64-gnu/*.node 2>/dev/null || echo "  lightningcss: MISSING"
+          ls @rollup/rollup-linux-x64-gnu/*.node 2>/dev/null || echo "  rollup: MISSING"
+          ls @img/sharp-linux-x64/*.node 2>/dev/null || echo "  sharp: MISSING"
 
       - name: Type check
         run: npm run typecheck
