@@ -58,9 +58,28 @@ function download(url, dest, redirects = 0) {
         reject(err)
       })
     })
-    req.on('error', reject)
-    req.setTimeout(120000, () => req.destroy(new Error('timeout')))
+    req.on('error', err => reject(err || new Error('connection error')))
+    req.setTimeout(120000, () => req.destroy(new Error('timeout after 120s')))
   })
+}
+
+/** Download with retries for transient failures */
+async function downloadWithRetry(url, dest, maxRetries = 3) {
+  let lastError
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await download(url, dest)
+      return
+    } catch (err) {
+      lastError = err
+      if (attempt < maxRetries) {
+        const delay = attempt * 2000 // 2s, 4s, 6s
+        console.log(`[fetch-model]   retry ${attempt}/${maxRetries - 1} in ${delay / 1000}s...`)
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+  }
+  throw lastError || new Error('download failed')
 }
 
 let failed = false
@@ -73,14 +92,15 @@ for (const f of FILES) {
   const url = `${HOST}/${MODEL_ID}/resolve/main/${f.path}`
   try {
     console.log(`[fetch-model] downloading ${f.path} ...`)
-    await download(url, dest)
+    await downloadWithRetry(url, dest)
     console.log(`[fetch-model]   -> ${(statSync(dest).size / 1048576).toFixed(2)} MB`)
   } catch (err) {
+    const errMsg = err?.message || String(err) || 'unknown error'
     if (f.required) {
-      console.error(`[fetch-model] FAILED (required) ${f.path}: ${err.message}`)
+      console.error(`[fetch-model] FAILED (required) ${f.path}: ${errMsg}`)
       failed = true
     } else {
-      console.warn(`[fetch-model] optional ${f.path} skipped: ${err.message}`)
+      console.warn(`[fetch-model] optional ${f.path} skipped: ${errMsg}`)
     }
   }
 }
