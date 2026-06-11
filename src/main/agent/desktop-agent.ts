@@ -1,6 +1,14 @@
 import { desktop, isDesktopAvailable, getDesktopUnavailableReason } from '../automation'
-import type { Tool, SessionConfig, PermissionRequestResult } from '@github/copilot-sdk'
+import type { Tool, SessionConfig, PermissionRequestResult, SessionHooks } from '@github/copilot-sdk'
 import { getClient, getSelectedModel } from './index'
+import { BrowserWindow } from 'electron'
+
+// Emit events to all renderer windows (mirrors the main agent's emitEvent)
+function emitDesktopEvent(event: { type: string; [key: string]: unknown }): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('aide:event', event)
+  }
+}
 
 // ============================================================
 // Desktop Sub-Agent — Specialized agent for desktop automation
@@ -425,9 +433,36 @@ interface DesktopTaskResult {
   error?: string
 }
 
+// Summarize tool input for display (avoid huge base64 in screenshots)
+function summarizeToolInput(toolName: string, args: Record<string, unknown>): string {
+  if (toolName.includes('screenshot')) {
+    const title = args.title || 'screen'
+    return `Taking screenshot of ${title}`
+  }
+  if (toolName === 'desktop_click' || toolName === 'desktop_click_in_window') {
+    const title = args.title || 'screen'
+    return `Click at (${args.x}, ${args.y}) in ${title}`
+  }
+  if (toolName === 'desktop_type') {
+    const text = String(args.text || '').slice(0, 30)
+    return `Type: "${text}${String(args.text || '').length > 30 ? '...' : ''}"`
+  }
+  if (toolName === 'desktop_shortcut') {
+    return `Press: ${args.shortcut}`
+  }
+  if (toolName === 'desktop_focus_window') {
+    return `Focus window: ${args.title}`
+  }
+  if (toolName === 'desktop_list_windows') {
+    return 'List all windows'
+  }
+  return JSON.stringify(args).slice(0, 80)
+}
+
 /**
  * Run a desktop automation task in an isolated sub-session.
  * The sub-agent has access to all desktop tools and a specialized prompt.
+ * Tool calls and progress are streamed to the UI via events.
  */
 export async function runDesktopSubagent(
   task: string,
@@ -447,12 +482,78 @@ export async function runDesktopSubagent(
     ? `Task: ${task}\nTarget window: "${windowTitle}"\n\nStart by taking a screenshot of the target window to see its current state.`
     : `Task: ${task}\n\nStart by listing windows or taking a screenshot to see what's available.`
 
+  // Track tool calls for the result summary
+  const toolSteps: string[] = []
+  const toolTimestamps = new Map<string, number>()
+
+  // Hooks to emit events for sub-agent tool calls (visible in UI)
+  const hooks: SessionHooks = {
+    onPreToolUse: async (input: any) => {
+      const toolName = input.toolName || ''
+      const toolCallId = input.toolCallId || `desktop-tc-${Date.now()}`
+      const inputPreview = summarizeToolInput(toolName, input.toolArgs || {})
+      
+      toolTimestamps.set(toolCallId, Date.now())
+      toolSteps.push(inputPreview)
+      
+      // Emit event so UI shows the sub-agent's tool call
+      emitDesktopEvent({
+        type: 'chat:tool-use',
+        taskId: null,
+        record: {
+          id: toolCallId,
+          toolName: `desktop:${toolName}`,  // Prefix to show it's from sub-agent
+          status: 'running',
+          timestamp: new Date().toISOString(),
+          inputPreview
+        }
+      })
+      
+      return undefined  // Allow all tools
+    },
+    
+    onPostToolUse: async (input: any) => {
+      const toolName = input.toolName || ''
+      const toolCallId = input.toolCallId || ''
+      const startTime = toolTimestamps.get(toolCallId)
+      const durationMs = startTime ? Date.now() - startTime : undefined
+      toolTimestamps.delete(toolCallId)
+      
+      // Summarize result (avoid huge base64 screenshots)
+      const result = input.toolResult || {}
+      let resultPreview = ''
+      if (result.success === false) {
+        resultPreview = `Error: ${result.error || 'unknown'}`
+      } else if (result.imageBase64) {
+        resultPreview = `Screenshot captured (${result.width}x${result.height})`
+      } else if (result.message) {
+        resultPreview = result.message
+      } else {
+        resultPreview = JSON.stringify(result).slice(0, 100)
+      }
+      
+      emitDesktopEvent({
+        type: 'chat:tool-use',
+        taskId: null,
+        record: {
+          id: toolCallId,
+          toolName: `desktop:${toolName}`,
+          status: result.success === false ? 'error' : 'done',
+          timestamp: new Date().toISOString(),
+          durationMs,
+          resultPreview
+        }
+      })
+    }
+  }
+
   try {
     const config: Partial<SessionConfig> = {
       sessionId,
       model: getSelectedModel(),
-      streaming: false,  // We want the complete result
+      streaming: true,  // Enable streaming for progress visibility
       tools: desktopTools,
+      hooks,  // Add hooks to emit tool events
       infiniteSessions: { enabled: false },  // Ephemeral session
       systemMessage: { content: DESKTOP_AGENT_PROMPT },
       onPermissionRequest: () => ({ kind: 'approve-once' as const })  // Auto-approve within sub-agent
@@ -460,27 +561,65 @@ export async function runDesktopSubagent(
 
     const session = await client.createSession(config as SessionConfig)
     
-    try {
-      const result = await session.sendAndWait({ prompt })
+    // Run with event subscription to capture streaming output
+    return new Promise((resolve) => {
+      let finalMessage = ''
+      let streamed = ''
       
-      // Clean up the ephemeral session
-      await session.disconnect()
-      await client.deleteSession(sessionId).catch(() => {})
-
-      return {
-        success: true,
-        summary: result.message || 'Task completed'
-      }
-    } catch (err: any) {
-      await session.disconnect().catch(() => {})
-      await client.deleteSession(sessionId).catch(() => {})
+      const unsubscribe = session.on((event: any) => {
+        switch (event.type) {
+          case 'assistant.message_delta': {
+            const delta = event.data?.deltaContent || ''
+            if (delta) streamed += delta
+            break
+          }
+          case 'assistant.message': {
+            const content = event.data?.content || ''
+            if (content) finalMessage = content
+            break
+          }
+          case 'session.idle': {
+            // Sub-agent finished
+            unsubscribe()
+            session.disconnect().catch(() => {})
+            client.deleteSession(sessionId).catch(() => {})
+            
+            resolve({
+              success: true,
+              summary: finalMessage || streamed || 'Task completed',
+              steps: toolSteps.length > 0 ? toolSteps : undefined
+            })
+            break
+          }
+          case 'session.error': {
+            unsubscribe()
+            session.disconnect().catch(() => {})
+            client.deleteSession(sessionId).catch(() => {})
+            
+            resolve({
+              success: false,
+              summary: '',
+              error: event.data?.message || 'Desktop agent error',
+              steps: toolSteps.length > 0 ? toolSteps : undefined
+            })
+            break
+          }
+        }
+      })
       
-      return {
-        success: false,
-        summary: '',
-        error: err.message || 'Desktop task failed'
-      }
-    }
+      // Start the sub-agent
+      session.send({ prompt }).catch((err: any) => {
+        unsubscribe()
+        session.disconnect().catch(() => {})
+        client.deleteSession(sessionId).catch(() => {})
+        
+        resolve({
+          success: false,
+          summary: '',
+          error: err.message || 'Failed to send prompt to desktop agent'
+        })
+      })
+    })
   } catch (err: any) {
     return {
       success: false,
