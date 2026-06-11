@@ -390,14 +390,16 @@ function pruneBackups(backupDir: string, keep: number): void {
 
 const DEFAULT_PERIODIC_POLL_INSTRUCTION = `Check for new email, Teams messages, and GitHub notifications since the last run (on first run, look back 24 hours). When using ask_work_iq, set the query range based on the time info above.
 
-Before handling each new item, call query_aide_tasks to see current active tasks, then make one of four decisions:
+For each external item, classify before acting. Preserve the item's identity wherever available: sourceId/messageId/PR#/issue#/email ID/source URL/sourceRef. Identity beats title similarity.
 
-1. Link to an existing task: if the item is a follow-up to an existing task. First use find_related_task (with sourceId/PR#/email ID, etc.) to confirm ownership; on a match, use add_task_activity to record progress, including sourceRef when possible.
-2. Update status: on objective complete/blocked signals (PR merged → completed, CI failing or changes requested → record a blocker, etc.) use update_aide_task to change status (status changes are logged automatically).
-3. Create a new task: only when no related task exists. Always fill sourceType by the real source (GitHub → github, Teams → teams, email → email, calendar → calendar) and attach sourceId and sourceUrl (external link).
-4. Ignore: if unrelated to existing tasks and not worth creating, skip it.
+Decision order:
+1. Prior decision: if the item matches a completed or cancelled task by sourceId/sourceUrl/sourceRef or another precise identifier, skip it. Terminal task states represent work already accepted, completed, declined, or otherwise decided.
+2. Existing active work: if it matches a pending or in-progress task, add activity only for substantive new progress, blockers, or user-required input. Check get_task_activities first and include sourceRef when possible.
+3. Status update: if the item objectively completes or blocks an active task (PR merged, CI failing, changes requested, etc.), update that task's status or record a blocker. Status changes are logged automatically.
+4. New task: create only when the item is actionable and no same task exists in any state. Always fill sourceType by the real source (GitHub → github, Teams → teams, email → email, calendar → calendar) and attach sourceId/sourceUrl when available.
+5. Ignore: skip non-actionable items, pleasantries, acknowledgements, forwards, CCs, bot notifications, and minor wording tweaks.
 
-Keep the bar for recording activity strict: only record when something actually moves forward, gets blocked, changes status, or requires substantive input from the user. Skip pleasantries, acknowledgements, forwards, CCs, bot notifications, and minor wording tweaks; default to ignoring — recording is the exception. Record each piece of progress only once (check with get_task_activities first), and merge multiple related items for the same task in one poll into a single note.`
+Keep the bar for recording activity strict: record only when something actually moves forward, gets blocked, changes status, or requires substantive input from the user. Default to ignoring; recording is the exception. Merge multiple related items for the same task in one poll into a single note.`
 
 const DEFAULT_WORLD_SYNC_INSTRUCTION = `Maintain the projects list. Do not create tasks.
 

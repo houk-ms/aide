@@ -15,7 +15,7 @@ import { listChannels, deliverTo } from '../channels'
 import { listSkills, getSkill, toggleSkill, deleteSkill } from '../skills'
 import { listSources, syncSource, syncAllSources, browseSkills, installFromMarketplace } from '../skills/sources'
 import { getUpdateState, checkForUpdates, downloadUpdate, quitAndInstall } from '../updater'
-import { openArtifact, revealArtifact, artifactExists, listArtifacts, revealArtifactsFolder } from '../files'
+import { openArtifact, readArtifactText, revealArtifact, artifactExists, listArtifacts, revealArtifactsFolder } from '../files'
 import { sdkHealth, sdkError } from '../health'
 
 export function registerIpcHandlers(): void {
@@ -147,6 +147,7 @@ export function registerIpcHandlers(): void {
 
   // === Files (agent artifacts) ===
   ipcMain.handle('files:open', (_, taskId, ref) => openArtifact(taskId, ref))
+  ipcMain.handle('files:readText', (_, taskId, ref) => readArtifactText(taskId, ref))
   ipcMain.handle('files:reveal', (_, taskId, ref) => revealArtifact(taskId, ref))
   ipcMain.handle('files:exists', (_, taskId, ref) => artifactExists(taskId, ref))
   ipcMain.handle('files:list', (_, taskId) => listArtifacts(taskId))

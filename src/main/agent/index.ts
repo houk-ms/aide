@@ -470,17 +470,24 @@ function normalizeReasoningEfforts(values: unknown): ReasoningEffortPreference[]
   return normalized.length > 0 ? normalized : undefined
 }
 
-// Derive per-tier context-window sizes from a model's billing/limits. The SDK
-// reports prompt-token budgets per tier (tokenPrices.contextMax for default,
-// tokenPrices.longContext.contextMax for the long tier); the full window adds
-// max_output_tokens. A long tier is only present for models that support it,
-// so its absence is the per-model "no long context" signal.
+// Derive per-tier context-window sizes from a model's billing/limits, matching
+// the numbers GitHub Copilot shows in its model picker. The two tiers use
+// DIFFERENT footings (verified against Copilot's UI):
+//   • Default tier → the prompt-token budget (tokenPrices.contextMax), e.g.
+//     200K for Opus / 272K for GPT-5.5. Models without tokenPrices fall back to
+//     limits.max_prompt_tokens, which equals contextMax on every single-tier
+//     model that reports both — so the value stays on the prompt-budget footing.
+//   • Long tier → the TOTAL context window (limits.max_context_window_tokens),
+//     which Copilot renders as ~1M (Opus 1,000,000 / GPT-5.5 1,050,000), NOT
+//     the long-tier prompt budget (longContext.contextMax = 936K / 922K).
+// A long tier only exists when longContext.contextMax is present, so that field
+// is the per-model "has long context" signal even though we display the total.
 //
 // listModels() passes the raw wire model through, so these fields exist at
 // runtime even though the public ModelInfo type narrows them away — read them
 // through a local shape rather than relying on the trimmed public type.
 interface SdkModelWire {
-  capabilities?: { limits?: { max_output_tokens?: number; max_context_window_tokens?: number } }
+  capabilities?: { limits?: { max_prompt_tokens?: number; max_context_window_tokens?: number } }
   billing?: { tokenPrices?: { contextMax?: number; longContext?: { contextMax?: number } } }
   supportedReasoningEfforts?: unknown
   defaultReasoningEffort?: unknown
@@ -490,11 +497,10 @@ function contextWindowsOf(m: SdkModelInfo): { defaultWindow?: number; longWindow
   const wire = m as SdkModelWire
   const limits = wire.capabilities?.limits
   const prices = wire.billing?.tokenPrices
-  const maxOutput = limits?.max_output_tokens ?? 0
-  const longBudget = prices?.longContext?.contextMax
+  const hasLong = prices?.longContext?.contextMax != null
   const defaultBudget = prices?.contextMax
-  const defaultWindow = defaultBudget != null ? defaultBudget + maxOutput : (limits?.max_context_window_tokens || undefined)
-  const longWindow = longBudget != null ? longBudget + maxOutput : undefined
+  const defaultWindow = defaultBudget ?? (limits?.max_prompt_tokens || undefined)
+  const longWindow = hasLong ? (limits?.max_context_window_tokens || undefined) : undefined
   return { defaultWindow, longWindow, supportsLong: longWindow != null }
 }
 

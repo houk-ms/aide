@@ -352,7 +352,7 @@ const updateTaskTool: Tool<any> = {
 
 const findRelatedTaskTool: Tool<any> = {
   name: 'find_related_task',
-  description: 'Before creating a new task or attaching progress, use this to check whether a related task already exists. Returns the most likely candidate, a similarity score (0-1), and the match reason. High score (>=0.7) should attach to the existing task; no result means you may create a new one. Passing an external reference (PR#/email ID/message ID) precisely matches a previously bound task.',
+  description: 'Before creating a new task or attaching progress, use this to check whether the same work item already exists. Exact identity signals (sourceRef, PR#/issue#/email/message IDs) match across the full task history because terminal states represent prior decisions about that item. Fuzzy title/description matching is for active and recently closed tasks only. High-score active matches should attach to the existing task; no result means you may create a new one.',
   parameters: {
     type: 'object',
     properties: {

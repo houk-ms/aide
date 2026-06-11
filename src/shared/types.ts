@@ -278,6 +278,15 @@ export interface ArtifactFile {
   modifiedAt: string
 }
 
+export interface ArtifactTextFile extends ArtifactFile {
+  text: string
+  baseUrl?: string
+}
+
+export type ArtifactTextResult =
+  | ({ ok: true } & ArtifactTextFile)
+  | { ok: false; error?: string }
+
 // === IPC API ===
 
 export interface AideAPI {
@@ -395,6 +404,7 @@ export interface AideAPI {
   }
   files: {
     open(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
+    readText(taskId: string | null, ref: string): Promise<ArtifactTextResult>
     reveal(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
     exists(taskId: string | null, ref: string): Promise<boolean>
     list(taskId: string | null): Promise<ArtifactFile[]>

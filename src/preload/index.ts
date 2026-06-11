@@ -117,6 +117,7 @@ const api: AideAPI = {
   },
   files: {
     open: (taskId, ref) => ipcRenderer.invoke('files:open', taskId, ref),
+    readText: (taskId, ref) => ipcRenderer.invoke('files:readText', taskId, ref),
     reveal: (taskId, ref) => ipcRenderer.invoke('files:reveal', taskId, ref),
     exists: (taskId, ref) => ipcRenderer.invoke('files:exists', taskId, ref),
     list: (taskId) => ipcRenderer.invoke('files:list', taskId),

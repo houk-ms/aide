@@ -1,7 +1,8 @@
 import { shell } from 'electron'
 import { homedir } from 'node:os'
-import { existsSync, statSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
+import { existsSync, statSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 // Agent-created files ("artifacts") live in the Copilot CLI session-state
 // sandbox:
@@ -38,12 +39,33 @@ function resolveArtifact(taskId: string | null, ref: string): string | null {
 }
 
 export type ArtifactResult = { ok: boolean; error?: string }
+export type ArtifactTextResult = ArtifactResult & { text?: string; name?: string; size?: number; modifiedAt?: string; baseUrl?: string }
+
+const TEXT_PREVIEW_EXT = /\.(md|markdown|html?)$/i
+const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 export async function openArtifact(taskId: string | null, ref: string): Promise<ArtifactResult> {
   const abs = resolveArtifact(taskId, ref)
   if (!abs) return { ok: false, error: 'File not found' }
   const err = await shell.openPath(abs) // returns '' on success
   return err ? { ok: false, error: err } : { ok: true }
+}
+
+export function readArtifactText(taskId: string | null, ref: string): ArtifactTextResult {
+  const abs = resolveArtifact(taskId, ref)
+  if (!abs) return { ok: false, error: 'File not found' }
+  const name = path.basename(abs)
+  if (!TEXT_PREVIEW_EXT.test(name)) return { ok: false, error: 'Preview supports Markdown and HTML files only' }
+  const st = statSync(abs)
+  if (st.size > MAX_PREVIEW_BYTES) return { ok: false, error: 'File is too large to preview' }
+  return {
+    ok: true,
+    text: readFileSync(abs, 'utf8'),
+    name,
+    size: st.size,
+    modifiedAt: st.mtime.toISOString(),
+    baseUrl: pathToFileURL(path.dirname(abs) + path.sep).toString()
+  }
 }
 
 export function revealArtifact(taskId: string | null, ref: string): ArtifactResult {

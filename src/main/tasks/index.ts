@@ -113,6 +113,11 @@ export function createTask(input: CreateTaskInput): CreateTaskResult {
     if (existing) return { task: existing, deduplicated: true }
   }
 
+  if (input.source.externalUrl) {
+    const existing = findTaskByExternalUrl(input.source.externalUrl)
+    if (existing) return { task: existing, deduplicated: true }
+  }
+
   // De-dup: content similarity check (threshold 0.75 for title, also checks description)
   const similar = findSimilarTask(input.title, 0.75, input.description)
   if (similar) return { task: similar, deduplicated: true }
@@ -273,15 +278,24 @@ export function findTaskByExternalId(externalId: string): Task | null {
   return row ? rowToTask(row) : null
 }
 
+export function findTaskByExternalUrl(externalUrl: string): Task | null {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM tasks WHERE source_external_url = ?').get(externalUrl) as Record<string, unknown> | undefined
+  return row ? rowToTask(row) : null
+}
+
 // === Content Similarity De-dup ===
 // Before creating a task, check if a very similar one already exists.
 // Uses simple token overlap (Jaccard similarity) as FTS5 can't do this well.
 
 export function findSimilarTask(title: string, threshold: number = 0.6, description?: string): Task | null {
   const db = getDb()
-  // Check active tasks AND recently completed/cancelled tasks (within 7 days)
-  // This prevents re-creating tasks that were just completed
-  const activeTasks = db.prepare(
+  // Durable identity matches (PR/issue/message identifiers) apply across the
+  // whole task history because terminal states represent prior decisions about
+  // that external work item. Fuzzy title similarity stays bounded to active +
+  // recent terminal tasks so recurring/evergreen work can reappear.
+  const allTasks = db.prepare('SELECT * FROM tasks').all() as Record<string, unknown>[]
+  const fuzzyCandidates = db.prepare(
     `SELECT * FROM tasks WHERE status IN ('pending', 'in_progress')
      UNION ALL
      SELECT * FROM tasks WHERE status IN ('completed', 'cancelled')
@@ -292,11 +306,9 @@ export function findSimilarTask(title: string, threshold: number = 0.6, descript
   const inputDescTokens = description ? tokenize(description) : null
   const inputEntities = extractEntities(title + (description ? ' ' + description : ''))
 
-  for (const row of activeTasks) {
+  for (const row of allTasks) {
     const existingTitle = row.title as string
     const existingDesc = (row.description as string) || ''
-
-    // 1. Entity match: if both share specific identifiers (PR #, issue #, email subject key), it's the same task
     if (inputEntities.size > 0) {
       const existingEntities = extractEntities(existingTitle + ' ' + existingDesc)
       const sharedEntities = [...inputEntities].filter(e => existingEntities.has(e))
@@ -304,8 +316,12 @@ export function findSimilarTask(title: string, threshold: number = 0.6, descript
         return rowToTask(row)
       }
     }
+  }
 
-    // 2. Token similarity on title
+  for (const row of fuzzyCandidates) {
+    const existingTitle = row.title as string
+    const existingDesc = (row.description as string) || ''
+
     const existingTokens = tokenize(existingTitle)
     const titleSim = jaccardSimilarity(inputTokens, existingTokens)
     if (titleSim >= threshold) {
@@ -339,7 +355,8 @@ export function findRelatedTask(
   sourceRef?: string
 ): RelatedTaskMatch | null {
   const db = getDb()
-  const candidates = db.prepare(
+  const allTasks = db.prepare('SELECT * FROM tasks').all() as Record<string, unknown>[]
+  const fuzzyCandidates = db.prepare(
     `SELECT * FROM tasks WHERE status IN ('pending', 'in_progress')
      UNION ALL
      SELECT * FROM tasks WHERE status IN ('completed', 'cancelled')
@@ -361,18 +378,22 @@ export function findRelatedTask(
   const inputDescTokens = description ? tokenize(description) : null
   const inputEntities = extractEntities(title + (description ? ' ' + description : '') + (sourceRef ? ' ' + sourceRef : ''))
 
-  let best: RelatedTaskMatch | null = null
-  for (const row of candidates) {
-    const existingTitle = row.title as string
-    const existingDesc = (row.description as string) || ''
-
-    if (inputEntities.size > 0) {
+  if (inputEntities.size > 0) {
+    for (const row of allTasks) {
+      const existingTitle = row.title as string
+      const existingDesc = (row.description as string) || ''
       const existingEntities = extractEntities(existingTitle + ' ' + existingDesc)
       const shared = [...inputEntities].filter(e => existingEntities.has(e))
       if (shared.length > 0) {
         return { task: rowToTask(row), score: 1, reason: 'entity' }
       }
     }
+  }
+
+  let best: RelatedTaskMatch | null = null
+  for (const row of fuzzyCandidates) {
+    const existingTitle = row.title as string
+    const existingDesc = (row.description as string) || ''
 
     const titleSim = jaccardSimilarity(inputTokens, tokenize(existingTitle))
     if (!best || titleSim > best.score) {
