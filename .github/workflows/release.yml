@@ -40,11 +40,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # npm ci sometimes fails to install Rollup's optional native bindings on
-      # Linux due to an npm bug with optional dependencies. Force-install them.
-      - name: Ensure Rollup native bindings (Linux)
+      # npm ci sometimes fails to install optional native bindings on Linux
+      # due to an npm bug. Force-install rollup and lightningcss bindings.
+      - name: Ensure native bindings (Linux)
         if: matrix.platform == 'linux'
-        run: npm install --no-save @rollup/rollup-linux-x64-gnu
+        run: npm install --no-save @rollup/rollup-linux-x64-gnu lightningcss-linux-x64-gnu
 
       - name: Download Playwright browser
         run: npx playwright install chromium
@@ -63,13 +63,22 @@ jobs:
           set -euo pipefail
           ver=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@github/copilot/package.json','utf8')).optionalDependencies['@github/copilot-darwin-x64']")
           echo "Copilot CLI version: $ver"
-          npm install --no-save --force --os=darwin --cpu=x64   "@github/copilot-darwin-x64@${ver}"
-          npm install --no-save --force --os=darwin --cpu=arm64 "@github/copilot-darwin-arm64@${ver}"
-          # Verify packages installed (binary may be in root or bin/)
-          echo "x64 package contents:" && ls -la node_modules/@github/copilot-darwin-x64/ || true
-          echo "arm64 package contents:" && ls -la node_modules/@github/copilot-darwin-arm64/ || true
-          test -d "node_modules/@github/copilot-darwin-x64"
-          test -d "node_modules/@github/copilot-darwin-arm64"
+          
+          # npm's --os/--cpu flags don't reliably install cross-platform optional deps.
+          # Download and extract the x64 package manually via npm pack.
+          mkdir -p node_modules/@github/copilot-darwin-x64
+          cd node_modules/@github
+          npm pack "@github/copilot-darwin-x64@${ver}" --quiet
+          tar -xzf github-copilot-darwin-x64-*.tgz
+          mv package/* copilot-darwin-x64/
+          rm -rf package github-copilot-darwin-x64-*.tgz
+          cd ../..
+          
+          # Verify packages installed
+          echo "x64 package contents:" && ls -la node_modules/@github/copilot-darwin-x64/
+          echo "arm64 package contents:" && ls -la node_modules/@github/copilot-darwin-arm64/
+          test -f "node_modules/@github/copilot-darwin-x64/copilot"
+          test -f "node_modules/@github/copilot-darwin-arm64/copilot"
 
       - name: Build & package (${{ matrix.platform }})
         # Publish only on a version tag. A manual workflow_dispatch run still
