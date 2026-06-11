@@ -50,6 +50,11 @@ export function initAgent(sdkClient: CopilotClient): void {
   client = sdkClient
 }
 
+/** Get the SDK client instance (for sub-agents) */
+export function getClient(): CopilotClient | null {
+  return client
+}
+
 export function stopStream(): void {
   if (activeSession) {
     activeSession.abort()
