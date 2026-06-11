@@ -49,6 +49,15 @@ jobs:
           set -euo pipefail
           cd node_modules
           
+          # @tailwindcss/oxide - required by @tailwindcss/postcss
+          ver=$(node -p "require('./@tailwindcss/oxide/package.json').version")
+          echo "@tailwindcss/oxide version: $ver"
+          npm pack "@tailwindcss/oxide-linux-x64-gnu@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-linux-x64-gnu
+          tar -xzf tailwindcss-oxide-linux-x64-gnu-*.tgz
+          mv package/* @tailwindcss/oxide-linux-x64-gnu/
+          rm -rf package tailwindcss-oxide-linux-x64-gnu-*.tgz
+          
           # lightningcss - required by tailwindcss/postcss
           ver=$(node -p "require('./lightningcss/package.json').version")
           echo "lightningcss version: $ver"
@@ -77,11 +86,13 @@ jobs:
           rm -rf package img-sharp-linux-x64-*.tgz
           
           echo "Installed:"
+          ls -la @tailwindcss/oxide-linux-x64-gnu/*.node 2>/dev/null || echo "  oxide: MISSING"
           ls -la lightningcss-linux-x64-gnu/*.node 2>/dev/null || echo "  lightningcss: MISSING"
           ls -la @rollup/rollup-linux-x64-gnu/*.node 2>/dev/null || echo "  rollup: MISSING"
           ls -la @img/sharp-linux-x64/*.node 2>/dev/null || echo "  sharp: MISSING"
 
       # macOS runners sometimes miss native bindings too. Install build-time deps.
+      # Install BOTH arm64 and x64 to handle runner architecture variations.
       - name: Ensure native bindings (macOS)
         if: matrix.platform == 'mac'
         shell: bash
@@ -89,23 +100,62 @@ jobs:
           set -euo pipefail
           cd node_modules
           
-          # lightningcss
+          # @tailwindcss/oxide - install both architectures
+          ver=$(node -p "require('./@tailwindcss/oxide/package.json').version")
+          echo "@tailwindcss/oxide version: $ver"
+          
+          npm pack "@tailwindcss/oxide-darwin-arm64@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-darwin-arm64
+          tar -xzf tailwindcss-oxide-darwin-arm64-*.tgz
+          mv package/* @tailwindcss/oxide-darwin-arm64/
+          rm -rf package tailwindcss-oxide-darwin-arm64-*.tgz
+          
+          npm pack "@tailwindcss/oxide-darwin-x64@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-darwin-x64
+          tar -xzf tailwindcss-oxide-darwin-x64-*.tgz
+          mv package/* @tailwindcss/oxide-darwin-x64/
+          rm -rf package tailwindcss-oxide-darwin-x64-*.tgz
+          
+          # lightningcss - install both architectures
           ver=$(node -p "require('./lightningcss/package.json').version")
+          echo "lightningcss version: $ver"
+          
           npm pack "lightningcss-darwin-arm64@${ver}" --quiet
           mkdir -p lightningcss-darwin-arm64
           tar -xzf lightningcss-darwin-arm64-*.tgz
           mv package/* lightningcss-darwin-arm64/
           rm -rf package lightningcss-darwin-arm64-*.tgz
           
-          # rollup
+          npm pack "lightningcss-darwin-x64@${ver}" --quiet
+          mkdir -p lightningcss-darwin-x64
+          tar -xzf lightningcss-darwin-x64-*.tgz
+          mv package/* lightningcss-darwin-x64/
+          rm -rf package lightningcss-darwin-x64-*.tgz
+          
+          # rollup - install both architectures
           ver=$(node -p "require('./rollup/package.json').optionalDependencies['@rollup/rollup-darwin-arm64']")
+          echo "rollup version: $ver"
+          
           npm pack "@rollup/rollup-darwin-arm64@${ver}" --quiet
           mkdir -p @rollup/rollup-darwin-arm64
           tar -xzf rollup-rollup-darwin-arm64-*.tgz
           mv package/* @rollup/rollup-darwin-arm64/
           rm -rf package rollup-rollup-darwin-arm64-*.tgz
           
-          echo "Build bindings installed"
+          ver=$(node -p "require('./rollup/package.json').optionalDependencies['@rollup/rollup-darwin-x64']")
+          npm pack "@rollup/rollup-darwin-x64@${ver}" --quiet
+          mkdir -p @rollup/rollup-darwin-x64
+          tar -xzf rollup-rollup-darwin-x64-*.tgz
+          mv package/* @rollup/rollup-darwin-x64/
+          rm -rf package rollup-rollup-darwin-x64-*.tgz
+          
+          echo "Installed:"
+          ls -la @tailwindcss/oxide-darwin-arm64/*.node 2>/dev/null || echo "  oxide-arm64: MISSING"
+          ls -la @tailwindcss/oxide-darwin-x64/*.node 2>/dev/null || echo "  oxide-x64: MISSING"
+          ls -la lightningcss-darwin-arm64/*.node 2>/dev/null || echo "  lightningcss-arm64: MISSING"
+          ls -la lightningcss-darwin-x64/*.node 2>/dev/null || echo "  lightningcss-x64: MISSING"
+          ls -la @rollup/rollup-darwin-arm64/*.node 2>/dev/null || echo "  rollup-arm64: MISSING"
+          ls -la @rollup/rollup-darwin-x64/*.node 2>/dev/null || echo "  rollup-x64: MISSING"
 
       - name: Download Playwright browser
         run: npx playwright install chromium
