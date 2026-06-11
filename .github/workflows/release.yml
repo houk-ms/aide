@@ -65,13 +65,23 @@ jobs:
           echo "Copilot CLI version: $ver"
           
           # npm's --os/--cpu flags don't reliably install cross-platform optional deps.
-          # Download and extract the x64 package manually via npm pack.
-          mkdir -p node_modules/@github/copilot-darwin-x64
+          # Download and extract both packages manually via npm pack.
           cd node_modules/@github
+          
+          # Install x64 (not installed by npm ci on arm64 runner)
           npm pack "@github/copilot-darwin-x64@${ver}" --quiet
+          mkdir -p copilot-darwin-x64
           tar -xzf github-copilot-darwin-x64-*.tgz
           mv package/* copilot-darwin-x64/
           rm -rf package github-copilot-darwin-x64-*.tgz
+          
+          # Reinstall arm64 (may have been removed by npm operations)
+          npm pack "@github/copilot-darwin-arm64@${ver}" --quiet
+          mkdir -p copilot-darwin-arm64
+          tar -xzf github-copilot-darwin-arm64-*.tgz
+          mv package/* copilot-darwin-arm64/
+          rm -rf package github-copilot-darwin-arm64-*.tgz
+          
           cd ../..
           
           # Verify packages installed
@@ -79,6 +89,37 @@ jobs:
           echo "arm64 package contents:" && ls -la node_modules/@github/copilot-darwin-arm64/
           test -f "node_modules/@github/copilot-darwin-x64/copilot"
           test -f "node_modules/@github/copilot-darwin-arm64/copilot"
+
+      # Sharp is a runtime dependency bundled into the app. The arm64 runner
+      # only installs arm64 binaries, but we need x64 for the x64 build.
+      - name: Ensure Sharp binaries for all target archs
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('./node_modules/sharp/package.json').optionalDependencies['@img/sharp-darwin-x64']")
+          echo "Sharp version: $ver"
+          
+          cd node_modules/@img
+          
+          # Install x64 sharp binary (not installed by npm ci on arm64 runner)
+          npm pack "@img/sharp-darwin-x64@${ver}" --quiet
+          mkdir -p sharp-darwin-x64
+          tar -xzf img-sharp-darwin-x64-*.tgz
+          mv package/* sharp-darwin-x64/
+          rm -rf package img-sharp-darwin-x64-*.tgz
+          
+          # Install x64 libvips (required by sharp)
+          libvips_ver=$(node -p "require('../sharp/package.json').optionalDependencies['@img/sharp-libvips-darwin-x64']")
+          echo "Libvips version: $libvips_ver"
+          npm pack "@img/sharp-libvips-darwin-x64@${libvips_ver}" --quiet
+          mkdir -p sharp-libvips-darwin-x64
+          tar -xzf img-sharp-libvips-darwin-x64-*.tgz
+          mv package/* sharp-libvips-darwin-x64/
+          rm -rf package img-sharp-libvips-darwin-x64-*.tgz
+          
+          cd ../..
+          echo "Sharp x64 installed:" && ls node_modules/@img/ | grep darwin
 
       - name: Build & package (${{ matrix.platform }})
         # Publish only on a version tag. A manual workflow_dispatch run still
