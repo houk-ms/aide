@@ -1,5 +1,5 @@
 import { createRequire } from 'module'
-import { app } from 'electron'
+import { app, screen as electronScreen } from 'electron'
 import path from 'path'
 import fs from 'fs'
 
@@ -82,6 +82,42 @@ export function isDesktopAvailable(): boolean {
   } catch {
     return false
   }
+}
+
+// ============================================================
+// Display/Monitor Information
+// ============================================================
+
+export interface DisplayInfo {
+  id: number
+  isPrimary: boolean
+  bounds: { x: number; y: number; width: number; height: number }
+  scaleFactor: number
+  label: string
+}
+
+/**
+ * Get information about all connected displays/monitors.
+ */
+export function getAllDisplays(): DisplayInfo[] {
+  const displays = electronScreen.getAllDisplays()
+  const primary = electronScreen.getPrimaryDisplay()
+  
+  return displays.map((d, i) => ({
+    id: d.id,
+    isPrimary: d.id === primary.id,
+    bounds: d.bounds,
+    scaleFactor: d.scaleFactor,
+    label: d.id === primary.id ? `Monitor ${i + 1} (Primary)` : `Monitor ${i + 1}`
+  }))
+}
+
+/**
+ * Get the primary display bounds.
+ */
+export function getPrimaryDisplayBounds(): { x: number; y: number; width: number; height: number } {
+  const primary = electronScreen.getPrimaryDisplay()
+  return primary.bounds
 }
 
 /**
@@ -336,15 +372,49 @@ export async function takeScreenshot(): Promise<string> {
 }
 
 /**
- * Take a screenshot of the entire screen and return as PNG buffer.
- * Returns { buffer, width, height } for sending to the agent.
+ * Take a screenshot and return as PNG buffer.
+ * @param monitor - 'primary' to capture only the primary monitor, 'all' for all monitors, or display ID
+ * Returns { buffer, width, height, bounds } for sending to the agent.
  */
-export async function takeScreenshotBuffer(): Promise<{ buffer: Buffer; width: number; height: number }> {
-  const { screen } = getNutJs()
-  const image = await screen.grab()
+export async function takeScreenshotBuffer(
+  monitor: 'primary' | 'all' | number = 'primary'
+): Promise<{ buffer: Buffer; width: number; height: number; bounds: { x: number; y: number; width: number; height: number } }> {
+  const nutjs = getNutJs()
+  
+  if (monitor === 'all') {
+    // Capture all monitors (original behavior)
+    const image = await nutjs.screen.grab()
+    const { data, width, height } = image
+    const pngBuffer = encodeRawBgraToPng(data, width, height)
+    return { buffer: pngBuffer, width, height, bounds: { x: 0, y: 0, width, height } }
+  }
+  
+  // Get the target display bounds
+  let targetBounds: { x: number; y: number; width: number; height: number }
+  
+  if (monitor === 'primary') {
+    targetBounds = getPrimaryDisplayBounds()
+  } else {
+    // Find display by ID
+    const displays = electronScreen.getAllDisplays()
+    const targetDisplay = displays.find(d => d.id === monitor)
+    if (!targetDisplay) {
+      throw new Error(`Display with ID ${monitor} not found. Available: ${displays.map(d => d.id).join(', ')}`)
+    }
+    targetBounds = targetDisplay.bounds
+  }
+  
+  // Capture just the target region
+  const image = await nutjs.screen.grabRegion({
+    left: targetBounds.x,
+    top: targetBounds.y,
+    width: targetBounds.width,
+    height: targetBounds.height
+  })
+  
   const { data, width, height } = image
   const pngBuffer = encodeRawBgraToPng(data, width, height)
-  return { buffer: pngBuffer, width, height }
+  return { buffer: pngBuffer, width, height, bounds: targetBounds }
 }
 
 /**

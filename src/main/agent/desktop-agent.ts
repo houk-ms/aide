@@ -1,4 +1,4 @@
-import { desktop, isDesktopAvailable, getDesktopUnavailableReason } from '../automation'
+import { desktop, isDesktopAvailable, getDesktopUnavailableReason, getAllDisplays } from '../automation'
 import type { Tool, SessionConfig, PermissionRequestResult, SessionHooks, Session } from '@github/copilot-sdk'
 import { getClient, getSelectedModel } from './index'
 import { BrowserWindow } from 'electron'
@@ -229,18 +229,25 @@ const desktopShortcutTool: Tool<any> = {
 
 const desktopScreenshotTool: Tool<any> = {
   name: 'desktop_screenshot',
-  description: 'Take a screenshot of the PRIMARY monitor only. Returns a base64-encoded PNG image with width/height. For multi-monitor setups, use desktop_screenshot_window instead.',
+  description: 'Take a screenshot of a monitor. Defaults to PRIMARY monitor. Returns a base64-encoded PNG image with width/height and the monitor bounds (for coordinate mapping). Use desktop_list_displays first to see available monitors.',
   parameters: {
     type: 'object',
-    properties: {}
+    properties: {
+      monitor: { 
+        type: 'string', 
+        description: 'Which monitor to capture: "primary" (default), "all" (combines all monitors into one wide image), or a display ID from desktop_list_displays',
+        enum: ['primary', 'all']
+      }
+    }
   },
   skipPermission: true,
-  handler: async () => {
+  handler: async (params: { monitor?: 'primary' | 'all' | number }) => {
     if (!isDesktopAvailable()) {
       return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
-      const { buffer, width, height } = await desktop.takeScreenshotBuffer()
+      const monitor = params.monitor || 'primary'
+      const { buffer, width, height, bounds } = await desktop.takeScreenshotBuffer(monitor)
       const base64 = buffer.toString('base64')
       return {
         success: true,
@@ -248,7 +255,33 @@ const desktopScreenshotTool: Tool<any> = {
         mimeType: 'image/png',
         width,
         height,
-        coordinateInfo: `ACTUAL screenshot size is ${width}x${height} pixels. If the image appears smaller, scale your coordinates proportionally.`
+        bounds,
+        coordinateInfo: `Screenshot is ${width}x${height} pixels from monitor at position (${bounds.x}, ${bounds.y}). When clicking, add bounds.x/bounds.y to convert image coordinates to absolute screen coordinates.`
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopListDisplaysTool: Tool<any> = {
+  name: 'desktop_list_displays',
+  description: 'List all connected displays/monitors with their bounds, scale factors, and which is primary. Use this to understand the multi-monitor layout before taking screenshots.',
+  parameters: {
+    type: 'object',
+    properties: {}
+  },
+  skipPermission: true,
+  handler: async () => {
+    try {
+      const displays = getAllDisplays()
+      return {
+        success: true,
+        count: displays.length,
+        displays,
+        tip: displays.length > 1 
+          ? 'Multiple monitors detected. Use desktop_screenshot with monitor="primary" to capture just the primary monitor, or use desktop_screenshot_window to capture a specific window.'
+          : 'Single monitor setup.'
       }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -421,6 +454,7 @@ const desktopScreenshotWindowTool: Tool<any> = {
 
 // All tools available to the desktop sub-agent
 const desktopTools: Tool<any>[] = [
+  desktopListDisplaysTool,      // Start here on multi-monitor setups
   desktopScreenshotWindowTool,  // Primary tool — always start here
   desktopClickInWindowTool,     // Primary click tool
   desktopFocusWindowTool,
@@ -429,7 +463,7 @@ const desktopTools: Tool<any>[] = [
   desktopListWindowsTool,
   desktopGetActiveWindowTool,
   desktopGetWindowBoundsTool,
-  desktopScreenshotTool,        // Fallback for single-monitor
+  desktopScreenshotTool,        // Monitor screenshot with bounds
   desktopClickTool,             // Advanced fallback
 ]
 

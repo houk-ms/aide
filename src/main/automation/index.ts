@@ -6,4 +6,4 @@ export * as browser from './browser'
 export * as desktop from './desktop'
 
 export { isBrowserAvailable, closeBrowser } from './browser'
-export { isDesktopAvailable, getDesktopUnavailableReason } from './desktop'
+export { isDesktopAvailable, getDesktopUnavailableReason, getAllDisplays, getPrimaryDisplayBounds } from './desktop'
