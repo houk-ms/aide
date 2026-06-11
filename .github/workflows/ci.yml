@@ -26,6 +26,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # npm ci sometimes fails to install Rollup's optional native bindings on
+      # Linux due to an npm bug with optional dependencies. Force-install them.
+      - name: Ensure Rollup native bindings
+        run: npm install --no-save @rollup/rollup-linux-x64-gnu
+
       - name: Type check
         run: npm run typecheck
 
