@@ -44,7 +44,16 @@ jobs:
       # due to an npm bug. Force-install rollup, lightningcss, and sharp bindings.
       - name: Ensure native bindings (Linux)
         if: matrix.platform == 'linux'
-        run: npm install --no-save @rollup/rollup-linux-x64-gnu lightningcss-linux-x64-gnu @img/sharp-linux-x64
+        run: |
+          npm install --no-save --force @rollup/rollup-linux-x64-gnu lightningcss-linux-x64-gnu @img/sharp-linux-x64
+          ls -la node_modules/lightningcss-linux-x64-gnu/ || echo "lightningcss not found"
+
+      # macOS runners sometimes miss native bindings too. Install build-time deps.
+      - name: Ensure native bindings (macOS)
+        if: matrix.platform == 'mac'
+        run: |
+          npm install --no-save --force @rollup/rollup-darwin-arm64 lightningcss-darwin-arm64
+          ls -la node_modules/@rollup/rollup-darwin-arm64/ || echo "rollup not found"
 
       - name: Download Playwright browser
         run: npx playwright install chromium

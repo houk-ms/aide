@@ -1,7 +1,18 @@
 import { desktop, isDesktopAvailable, getDesktopUnavailableReason } from '../automation'
-import type { Tool, SessionConfig, PermissionRequestResult, SessionHooks } from '@github/copilot-sdk'
+import type { Tool, SessionConfig, PermissionRequestResult, SessionHooks, Session } from '@github/copilot-sdk'
 import { getClient, getSelectedModel } from './index'
 import { BrowserWindow } from 'electron'
+
+// Track active desktop sub-agent session for abort handling
+let activeDesktopSession: Session | null = null
+
+/** Abort the currently running desktop sub-agent (called when user clicks Stop) */
+export function abortDesktopSubagent(): void {
+  if (activeDesktopSession) {
+    activeDesktopSession.abort()
+    activeDesktopSession = null
+  }
+}
 
 // Emit events to all renderer windows (mirrors the main agent's emitEvent)
 function emitDesktopEvent(event: { type: string; [key: string]: unknown }): void {
@@ -560,11 +571,13 @@ export async function runDesktopSubagent(
     }
 
     const session = await client.createSession(config as SessionConfig)
+    activeDesktopSession = session
     
     // Run with event subscription to capture streaming output
     return new Promise((resolve) => {
       let finalMessage = ''
       let streamed = ''
+      let aborted = false
       
       const unsubscribe = session.on((event: any) => {
         switch (event.type) {
@@ -581,18 +594,21 @@ export async function runDesktopSubagent(
           case 'session.idle': {
             // Sub-agent finished
             unsubscribe()
+            activeDesktopSession = null
             session.disconnect().catch(() => {})
             client.deleteSession(sessionId).catch(() => {})
             
             resolve({
-              success: true,
-              summary: finalMessage || streamed || 'Task completed',
+              success: !aborted,
+              summary: aborted ? '' : (finalMessage || streamed || 'Task completed'),
+              error: aborted ? 'Cancelled by user' : undefined,
               steps: toolSteps.length > 0 ? toolSteps : undefined
             })
             break
           }
           case 'session.error': {
             unsubscribe()
+            activeDesktopSession = null
             session.disconnect().catch(() => {})
             client.deleteSession(sessionId).catch(() => {})
             
@@ -604,12 +620,19 @@ export async function runDesktopSubagent(
             })
             break
           }
+          case 'abort': {
+            // User clicked Stop
+            aborted = true
+            // session.idle will follow shortly, resolve there
+            break
+          }
         }
       })
       
       // Start the sub-agent
       session.send({ prompt }).catch((err: any) => {
         unsubscribe()
+        activeDesktopSession = null
         session.disconnect().catch(() => {})
         client.deleteSession(sessionId).catch(() => {})
         

@@ -29,7 +29,9 @@ jobs:
       # npm ci sometimes fails to install optional native bindings on Linux
       # due to an npm bug. Force-install rollup, lightningcss, and sharp bindings.
       - name: Ensure native bindings
-        run: npm install --no-save @rollup/rollup-linux-x64-gnu lightningcss-linux-x64-gnu @img/sharp-linux-x64
+        run: |
+          npm install --no-save --force @rollup/rollup-linux-x64-gnu lightningcss-linux-x64-gnu @img/sharp-linux-x64
+          ls -la node_modules/lightningcss-linux-x64-gnu/ || echo "lightningcss not found"
 
       - name: Type check
         run: npm run typecheck

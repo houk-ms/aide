@@ -13,6 +13,7 @@ import { BrowserWindow } from 'electron'
 import type { CopilotClient, CopilotSession } from '@github/copilot-sdk'
 import type { SessionConfig, PermissionRequest, PermissionRequestResult } from '@github/copilot-sdk'
 import { buildTools } from './tools'
+import { abortDesktopSubagent } from './desktop-agent'
 import { sdkError } from '../health'
 
 // Build the user-facing error when the SDK never came up. Prefer the real
@@ -56,6 +57,9 @@ export function getClient(): CopilotClient | null {
 }
 
 export function stopStream(): void {
+  // Abort desktop sub-agent if running
+  abortDesktopSubagent()
+  
   if (activeSession) {
     activeSession.abort()
     activeSession = null
