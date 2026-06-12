@@ -206,58 +206,30 @@ jobs:
           echo "Copilot CLI version: $ver"
           
           # npm's --os/--cpu flags don't reliably install cross-platform optional deps.
-          # Download and extract packages manually via npm pack.
+          # Download and extract both packages manually via npm pack.
           cd node_modules/@github
           
-          case "${{ matrix.platform }}" in
-            mac)
-              # Install x64 (not installed by npm ci on arm64 runner)
-              npm pack "@github/copilot-darwin-x64@${ver}" --quiet
-              mkdir -p copilot-darwin-x64
-              tar -xzf github-copilot-darwin-x64-*.tgz
-              mv package/* copilot-darwin-x64/
-              rm -rf package github-copilot-darwin-x64-*.tgz
-              
-              # Reinstall arm64 (may have been removed by npm operations)
-              npm pack "@github/copilot-darwin-arm64@${ver}" --quiet
-              mkdir -p copilot-darwin-arm64
-              tar -xzf github-copilot-darwin-arm64-*.tgz
-              mv package/* copilot-darwin-arm64/
-              rm -rf package github-copilot-darwin-arm64-*.tgz
-              
-              cd ../..
-              echo "x64 package contents:" && ls -la node_modules/@github/copilot-darwin-x64/
-              echo "arm64 package contents:" && ls -la node_modules/@github/copilot-darwin-arm64/
-              test -f "node_modules/@github/copilot-darwin-x64/copilot"
-              test -f "node_modules/@github/copilot-darwin-arm64/copilot"
-              ;;
-            win)
-              win_ver=$(node -p "JSON.parse(require('fs').readFileSync('../copilot/package.json','utf8')).optionalDependencies['@github/copilot-win32-x64']")
-              npm pack "@github/copilot-win32-x64@${win_ver}" --quiet
-              mkdir -p copilot-win32-x64
-              tar -xzf github-copilot-win32-x64-*.tgz
-              mv package/* copilot-win32-x64/
-              rm -rf package github-copilot-win32-x64-*.tgz
-              
-              cd ../..
-              test -f "node_modules/@github/copilot-win32-x64/copilot.exe"
-              ;;
-            linux)
-              linux_ver=$(node -p "JSON.parse(require('fs').readFileSync('../copilot/package.json','utf8')).optionalDependencies['@github/copilot-linux-x64']")
-              npm pack "@github/copilot-linux-x64@${linux_ver}" --quiet
-              mkdir -p copilot-linux-x64
-              tar -xzf github-copilot-linux-x64-*.tgz
-              mv package/* copilot-linux-x64/
-              rm -rf package github-copilot-linux-x64-*.tgz
-              
-              cd ../..
-              test -f "node_modules/@github/copilot-linux-x64/copilot"
-              ;;
-          esac
-
-      - name: Remove optional websocket native accelerators
-        shell: bash
-        run: rm -rf node_modules/bufferutil node_modules/utf-8-validate
+          # Install x64 (not installed by npm ci on arm64 runner)
+          npm pack "@github/copilot-darwin-x64@${ver}" --quiet
+          mkdir -p copilot-darwin-x64
+          tar -xzf github-copilot-darwin-x64-*.tgz
+          mv package/* copilot-darwin-x64/
+          rm -rf package github-copilot-darwin-x64-*.tgz
+          
+          # Reinstall arm64 (may have been removed by npm operations)
+          npm pack "@github/copilot-darwin-arm64@${ver}" --quiet
+          mkdir -p copilot-darwin-arm64
+          tar -xzf github-copilot-darwin-arm64-*.tgz
+          mv package/* copilot-darwin-arm64/
+          rm -rf package github-copilot-darwin-arm64-*.tgz
+          
+          cd ../..
+          
+          # Verify packages installed
+          echo "x64 package contents:" && ls -la node_modules/@github/copilot-darwin-x64/
+          echo "arm64 package contents:" && ls -la node_modules/@github/copilot-darwin-arm64/
+          test -f "node_modules/@github/copilot-darwin-x64/copilot"
+          test -f "node_modules/@github/copilot-darwin-arm64/copilot"
 
       # Sharp is a runtime dependency bundled into the app. The arm64 runner
       # only installs arm64 binaries, but we need x64 for the x64 build.
