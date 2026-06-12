@@ -10,7 +10,33 @@ permissions:
   contents: write
 
 jobs:
+  prepare-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: models/Xenova/all-MiniLM-L6-v2
+          key: aide-embedding-model-all-MiniLM-L6-v2-v1
+
+      - name: Download embedding model
+        run: node scripts/fetch-model.mjs
+
+      - name: Upload embedding model
+        uses: actions/upload-artifact@v4
+        with:
+          name: aide-embedding-model
+          path: models/Xenova/all-MiniLM-L6-v2
+          if-no-files-found: error
+
   release:
+    needs: prepare-model
     strategy:
       fail-fast: false
       matrix:
@@ -38,29 +64,49 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Download embedding model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aide-embedding-model
+          path: models/Xenova/all-MiniLM-L6-v2
 
       - name: Download Playwright browser
         run: npx playwright install chromium
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/browsers
           
-      # The Copilot CLI ships as platform-specific binary packages gated by
-      # os/cpu, so `npm ci` only installs the one matching the build runner.
-      # macOS is packaged for BOTH arm64 and x64, but the runner is arm64 — so
-      # the x64 binary is skipped and the resulting x64 DMG/ZIP can't start the
-      # SDK. Force-install every CLI binary the target archs need.
-      - name: Ensure Copilot CLI binaries for all target archs
-        if: matrix.platform == 'mac'
+      # The Copilot CLI ships as platform-specific optional packages gated by
+      # os/cpu, so explicitly install the CLI binary package(s) each packaged
+      # target needs. Lifecycle scripts stay disabled; electron-builder handles
+      # required native app dependency rebuilds during packaging.
+      - name: Ensure Copilot CLI binaries for target archs
         shell: bash
         run: |
           set -euo pipefail
           ver=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@github/copilot/package.json','utf8')).optionalDependencies['@github/copilot-darwin-x64']")
           echo "Copilot CLI version: $ver"
-          npm install --no-save --force --os=darwin --cpu=x64   "@github/copilot-darwin-x64@${ver}"
-          npm install --no-save --force --os=darwin --cpu=arm64 "@github/copilot-darwin-arm64@${ver}"
-          test -f "node_modules/@github/copilot-darwin-x64/copilot"
-          test -f "node_modules/@github/copilot-darwin-arm64/copilot"
+          case "${{ matrix.platform }}" in
+            mac)
+              npm install --no-save --force --ignore-scripts --os=darwin --cpu=x64   "@github/copilot-darwin-x64@${ver}"
+              npm install --no-save --force --ignore-scripts --os=darwin --cpu=arm64 "@github/copilot-darwin-arm64@${ver}"
+              test -f "node_modules/@github/copilot-darwin-x64/copilot"
+              test -f "node_modules/@github/copilot-darwin-arm64/copilot"
+              ;;
+            win)
+              npm install --no-save --force --ignore-scripts --os=win32 --cpu=x64 "@github/copilot-win32-x64@${ver}"
+              test -f "node_modules/@github/copilot-win32-x64/copilot.exe"
+              ;;
+            linux)
+              npm install --no-save --force --ignore-scripts --os=linux --cpu=x64 "@github/copilot-linux-x64@${ver}"
+              test -f "node_modules/@github/copilot-linux-x64/copilot"
+              ;;
+          esac
+
+      - name: Remove optional websocket native accelerators
+        shell: bash
+        run: rm -rf node_modules/bufferutil node_modules/utf-8-validate
 
       - name: Build & package (${{ matrix.platform }})
         # Publish only on a version tag. A manual workflow_dispatch run still
