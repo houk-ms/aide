@@ -853,6 +853,7 @@ function TaskHeader({ task, onBack, refreshKey }: { task: Task; onBack: () => vo
   const [files, setFiles] = useState<ArtifactFile[]>([])
   const [activitySeenAt, setActivitySeenAt] = useState<string | null>(null)
   const [filesSeenAt, setFilesSeenAt] = useState<string | null>(null)
+  const headerRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     let alive = true
@@ -891,8 +892,20 @@ function TaskHeader({ task, onBack, refreshKey }: { task: Task; onBack: () => vo
 
   const toggle = (f: Exclude<Facet, null>) => setFacet(cur => (cur === f ? null : f))
 
+  useEffect(() => {
+    if (!facet) return
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const el = headerRef.current
+      if (el && event.target instanceof Node && !el.contains(event.target)) {
+        setFacet(null)
+      }
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true)
+  }, [facet])
+
   return (
-    <header className="shrink-0">
+    <header ref={headerRef} className="shrink-0">
       <div className="flex items-center gap-2 px-5 h-[52px] drag-region">
         <button onClick={onBack} className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors no-drag" title="Back">
           <ChevronLeft size={16} strokeWidth={2} />
