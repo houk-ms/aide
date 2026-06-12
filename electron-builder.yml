@@ -34,6 +34,11 @@ npmRebuild: true
 
 # Bundle Playwright browser per-platform (downloaded in CI)
 extraResources:
+  # Runtime tray/window icons used by the main process in packaged builds.
+  - from: "resources"
+    to: "resources"
+    filter:
+      - "icon*.png"
   - from: "browsers"
     to: "browsers"
     filter:

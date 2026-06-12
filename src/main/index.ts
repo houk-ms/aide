@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Notification, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, Menu, Notification, Tray, nativeImage, shell } from 'electron'
 import { join } from 'path'
 import { registerIpcHandlers } from './ipc'
 import { getDb, closeDb } from './db'
@@ -23,6 +23,36 @@ import { initEmbeddingModel } from './memory'
 app.commandLine.appendSwitch('lang', 'en-US')
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let isQuitting = false
+
+function getResourcePath(name: string): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'resources', name)
+    : join(__dirname, '../../resources', name)
+}
+
+function showMainWindow(): void {
+  if (!mainWindow) createWindow()
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function createTray(): void {
+  if (process.platform !== 'win32' || tray) return
+  const icon = nativeImage.createFromPath(getResourcePath('icon-32.png'))
+  tray = new Tray(icon.isEmpty() ? nativeImage.createFromPath(getResourcePath('icon.png')) : icon)
+  tray.setToolTip('Aide')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Aide', click: showMainWindow },
+    { type: 'separator' },
+    { label: 'Quit Aide', click: () => { isQuitting = true; app.quit() } }
+  ]))
+  tray.on('click', showMainWindow)
+  tray.on('double-click', showMainWindow)
+}
 
 // Window state persistence
 function getWindowState(): { width: number; height: number; x?: number; y?: number } {
@@ -58,7 +88,7 @@ function createWindow(): void {
     y: state.y,
     minWidth: 900,
     minHeight: 600,
-    icon: nativeImage.createFromPath(join(__dirname, '../../resources/icon.png')),
+    icon: nativeImage.createFromPath(getResourcePath('icon.png')),
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     titleBarOverlay: process.platform === 'win32' ? { color: '#00000000', symbolColor: '#1a1a1a', height: 52 } : undefined,
@@ -101,9 +131,16 @@ function createWindow(): void {
     mainWindow.webContents.openDevTools({ mode: 'right' })
   }
 
-  // Save window state on close
-  mainWindow.on('close', () => {
+  createTray()
+
+  // Save window state on close. On Windows, the close button keeps Aide running
+  // in the tray; the tray Quit action and app-level quits still exit normally.
+  mainWindow.on('close', (event) => {
     if (mainWindow) saveWindowState(mainWindow)
+    if (process.platform === 'win32' && !isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
   })
 
   mainWindow.on('closed', () => {
@@ -189,9 +226,7 @@ app.whenReady().then(async () => {
   }, 60_000)
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-    }
+    showMainWindow()
   })
 })
 
@@ -202,10 +237,13 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
   stopAllJobs()
   stopAllMcpServers()
   stopWeChatMonitor()
   stopUpdater()
+  tray?.destroy()
+  tray = null
   closeDb()
 })
 
