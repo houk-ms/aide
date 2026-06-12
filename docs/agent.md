@@ -57,6 +57,7 @@ The Agent gains its capabilities through the SDK's Custom Tools mechanism:
 | `memory_write` | Write memory (add/update/remove) | Memory |
 | `memory_search` | Retrieve past memories | Memory |
 | `create_aide_task` | Create a new Aide task | Task |
+| `get_aide_task` | Read one task with working state and recent activity | Task |
 | `update_aide_task` | Update Aide task status | Task |
 | `find_related_task` | De-dup check before creating a task | Task |
 | `add_task_activity` | Append an entry to a task's activity timeline | Task |
