@@ -1,12 +1,39 @@
 import { desktop, isDesktopAvailable, getDesktopUnavailableReason, getAllDisplays, getGridCellCoords } from '../automation'
-import type { Tool, SessionConfig, PermissionRequestResult, SessionHooks, Session } from '@github/copilot-sdk'
+import type { Tool, SessionConfig, PermissionRequestResult } from '@github/copilot-sdk'
 import { getClient, getSelectedModel } from './index'
 import { BrowserWindow, app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 
+// Type alias for session hooks (SDK doesn't export the type)
+type SessionHooks = NonNullable<SessionConfig['hooks']>
+
 // Track active desktop sub-agent session for abort handling
-let activeDesktopSession: Session | null = null
+let activeDesktopSession: { abort: () => void; disconnect: () => Promise<void> } | null = null
+
+// Track screenshot temp files for cleanup
+const screenshotFiles: string[] = []
+const MAX_SCREENSHOT_FILES = 20  // Keep at most this many recent screenshots
+
+/** Clean up old screenshot temp files */
+function cleanupOldScreenshots(): void {
+  while (screenshotFiles.length > MAX_SCREENSHOT_FILES) {
+    const oldFile = screenshotFiles.shift()
+    if (oldFile) {
+      try {
+        fs.unlinkSync(oldFile)
+      } catch {
+        // File may already be deleted
+      }
+    }
+  }
+}
+
+/** Track a new screenshot file and cleanup old ones */
+function trackScreenshotFile(filePath: string): void {
+  screenshotFiles.push(filePath)
+  cleanupOldScreenshots()
+}
 
 /** Abort the currently running desktop sub-agent (called when user clicks Stop) */
 export function abortDesktopSubagent(): void {
@@ -260,25 +287,117 @@ const desktopClickInWindowTool: Tool<any> = {
 
 const desktopTypeTool: Tool<any> = {
   name: 'desktop_type',
-  description: 'Type text using the keyboard. PREREQUISITE: Call desktop_focus_window FIRST to ensure the correct window receives input, then click on an input field to place cursor. Text is typed at the current cursor position.',
+  description: 'Type text using the keyboard. PREREQUISITE: Call desktop_focus_window FIRST to ensure the correct window receives input, then click on an input field to place cursor. Text is typed at the current cursor position. TIP: Use desktop_clear_input first if the field already has text.',
   parameters: {
     type: 'object',
     properties: {
-      text: { type: 'string', description: 'Text to type' }
+      text: { type: 'string', description: 'Text to type' },
+      pressEnter: { type: 'boolean', description: 'Press Enter after typing (default: false)' }
     },
     required: ['text']
   },
   skipPermission: true,
-  handler: async (args: { text: string }) => {
+  handler: async (args: { text: string; pressEnter?: boolean }) => {
     if (!isDesktopAvailable()) {
       return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
       await desktop.typeText(args.text)
-      return { success: true, message: `Typed: "${args.text.substring(0, 50)}${args.text.length > 50 ? '...' : ''}"` }
+      if (args.pressEnter) {
+        await desktop.pressShortcut('Enter')
+      }
+      return { success: true, message: `Typed: "${args.text.substring(0, 50)}${args.text.length > 50 ? '...' : ''}"${args.pressEnter ? ' + Enter' : ''}` }
     } catch (err: any) {
       return { success: false, error: err.message }
     }
+  }
+}
+
+const desktopClearInputTool: Tool<any> = {
+  name: 'desktop_clear_input',
+  description: 'Clear the currently focused input field by selecting all text and deleting it. PREREQUISITE: Click on the input field first to focus it.',
+  parameters: {
+    type: 'object',
+    properties: {}
+  },
+  skipPermission: true,
+  handler: async () => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      // Select all and delete
+      await desktop.pressShortcut('Ctrl+A')
+      await desktop.wait(50)
+      await desktop.pressShortcut('Delete')
+      return { success: true, message: 'Cleared input field (Ctrl+A, Delete)' }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopTripleClickTool: Tool<any> = {
+  name: 'desktop_triple_click',
+  description: 'Triple-click to select an entire line or paragraph. Useful for selecting text before copying or replacing.',
+  parameters: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Window title (partial match)' },
+      x: { type: 'number', description: 'X coordinate in screenshot' },
+      y: { type: 'number', description: 'Y coordinate in screenshot' },
+      imageWidth: { type: 'number', description: 'Screenshot width for scaling' },
+      imageHeight: { type: 'number', description: 'Screenshot height for scaling' }
+    },
+    required: ['title', 'x', 'y', 'imageWidth', 'imageHeight']
+  },
+  skipPermission: true,
+  handler: async (args: { title: string; x: number; y: number; imageWidth: number; imageHeight: number }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      const windowInfo = await desktop.getWindowBounds(args.title)
+      if (!windowInfo) {
+        return { success: false, error: `No window found matching "${args.title}"` }
+      }
+      
+      const clickBounds = windowInfo.contentBounds || windowInfo.bounds
+      const scaleX = clickBounds.width / args.imageWidth
+      const scaleY = clickBounds.height / args.imageHeight
+      const absX = clickBounds.left + Math.round(args.x * scaleX)
+      const absY = clickBounds.top + Math.round(args.y * scaleY)
+      
+      await desktop.focusWindow(args.title)
+      
+      // Triple click with short delays
+      await desktop.click(absX, absY, 'left')
+      await desktop.wait(50)
+      await desktop.click(absX, absY, 'left')
+      await desktop.wait(50)
+      await desktop.click(absX, absY, 'left')
+      
+      return { success: true, message: `Triple-clicked at (${absX}, ${absY}) to select line/paragraph` }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopWaitTool: Tool<any> = {
+  name: 'desktop_wait',
+  description: 'Wait for a specified duration. Use this when UI needs time to update after an action (e.g., after clicking a menu, waiting for a dialog to appear).',
+  parameters: {
+    type: 'object',
+    properties: {
+      ms: { type: 'number', description: 'Milliseconds to wait (default: 500, max: 5000)' }
+    }
+  },
+  skipPermission: true,
+  handler: async (args: { ms?: number }) => {
+    const duration = Math.min(args.ms || 500, 5000)
+    await desktop.wait(duration)
+    return { success: true, message: `Waited ${duration}ms` }
   }
 }
 
@@ -638,6 +757,7 @@ const desktopScreenshotWindowTool: Tool<any> = {
         const filename = `desktop-screenshot-${Date.now()}.png`
         const filePath = path.join(tempDir, filename)
         fs.writeFileSync(filePath, result.buffer)
+        trackScreenshotFile(filePath)  // Track for cleanup
         
         const response: any = {
           success: true,
@@ -688,9 +808,12 @@ const desktopTools: Tool<any>[] = [
   desktopScreenshotWindowTool,  // Call after focus to verify state (supports withGrid option)
   desktopClickInWindowTool,     // Primary click tool (requires prior focus)
   desktopClickGridCellTool,     // Click by grid cell (A1-D4) for easier targeting
+  desktopTripleClickTool,       // Select entire line/paragraph
   desktopTypeTool,              // Requires prior focus
+  desktopClearInputTool,        // Clear input field before typing
   desktopShortcutTool,          // Requires prior focus
   desktopScrollTool,            // Requires prior focus — try both up AND down
+  desktopWaitTool,              // Wait for UI to update
   desktopListWindowsTool,
   desktopGetActiveWindowTool,
   desktopGetWindowBoundsTool,
@@ -725,15 +848,26 @@ function summarizeToolInput(toolName: string, args: Record<string, unknown>): st
     const offset = (args.offsetX || args.offsetY) ? ` +offset(${args.offsetX || 0}, ${args.offsetY || 0})` : ''
     return `Click cell ${args.cell}${offset} in ${title}`
   }
+  if (toolName === 'desktop_triple_click') {
+    const title = args.title || 'window'
+    return `Triple-click at (${args.x}, ${args.y}) in ${title}`
+  }
   if (toolName === 'desktop_type') {
     const text = String(args.text || '').slice(0, 30)
-    return `Type: "${text}${String(args.text || '').length > 30 ? '...' : ''}"`
+    const enter = args.pressEnter ? ' + Enter' : ''
+    return `Type: "${text}${String(args.text || '').length > 30 ? '...' : ''}"${enter}`
+  }
+  if (toolName === 'desktop_clear_input') {
+    return 'Clear input field'
   }
   if (toolName === 'desktop_shortcut') {
     return `Press: ${args.shortcut}`
   }
   if (toolName === 'desktop_scroll') {
     return `Scroll ${args.direction} by ${args.amount || 300}px`
+  }
+  if (toolName === 'desktop_wait') {
+    return `Wait ${args.ms || 500}ms`
   }
   if (toolName === 'desktop_focus_window') {
     return `Focus window: ${args.title}`
@@ -765,8 +899,8 @@ export async function runDesktopSubagent(
   const sessionId = `desktop-${Date.now()}`
   console.log(`[Desktop] Starting subagent | session: ${sessionId} | task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''} | window: ${windowTitle || 'none'}`)
   const prompt = windowTitle
-    ? `Task: ${task}\nTarget window: "${windowTitle}"\n\nStart by taking a screenshot of the target window to see its current state.`
-    : `Task: ${task}\n\nStart by listing windows or taking a screenshot to see what's available.`
+    ? `Task: ${task}\nTarget window: "${windowTitle}"\n\nStart by listing windows to find the exact title, then focus and screenshot the target window.`
+    : `Task: ${task}\n\nStart by listing windows to see what's available, then focus and screenshot the relevant window.`
 
   // Track tool calls for the result summary
   const toolSteps: string[] = []

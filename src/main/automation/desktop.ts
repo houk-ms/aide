@@ -644,6 +644,9 @@ async function addCoordinateGrid(pngBuffer: Buffer): Promise<Buffer> {
     const cellWidth = width / GRID_COLS
     const cellHeight = height / GRID_ROWS
     
+    // Pre-compute color as unsigned 32-bit (>>> 0 converts signed to unsigned)
+    const gridColor = ((GRID_LINE_COLOR.r << 24) | (GRID_LINE_COLOR.g << 16) | (GRID_LINE_COLOR.b << 8) | GRID_LINE_COLOR.a) >>> 0
+    
     // Draw vertical grid lines
     for (let col = 1; col < GRID_COLS; col++) {
       const x = Math.round(col * cellWidth)
@@ -652,8 +655,7 @@ async function addCoordinateGrid(pngBuffer: Buffer): Promise<Buffer> {
         for (let dx = -1; dx <= 0; dx++) {
           const px = x + dx
           if (px >= 0 && px < width) {
-            const color = (GRID_LINE_COLOR.r << 24) | (GRID_LINE_COLOR.g << 16) | (GRID_LINE_COLOR.b << 8) | GRID_LINE_COLOR.a
-            image.setPixelColor(color, px, y)
+            image.setPixelColor(gridColor, px, y)
           }
         }
       }
@@ -666,8 +668,7 @@ async function addCoordinateGrid(pngBuffer: Buffer): Promise<Buffer> {
         for (let dy = -1; dy <= 0; dy++) {
           const py = y + dy
           if (py >= 0 && py < height) {
-            const color = (GRID_LINE_COLOR.r << 24) | (GRID_LINE_COLOR.g << 16) | (GRID_LINE_COLOR.b << 8) | GRID_LINE_COLOR.a
-            image.setPixelColor(color, x, py)
+            image.setPixelColor(gridColor, x, py)
           }
         }
       }
