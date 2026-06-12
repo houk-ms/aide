@@ -34,9 +34,9 @@ const DESKTOP_AGENT_PROMPT = `You are a desktop automation specialist. Your job 
 
 ## Core Workflow
 
-1. **ALWAYS screenshot first**: Before any interaction, call desktop_screenshot_window to see what's on screen and verify the correct window is focused.
+1. **FOCUS FIRST — MANDATORY**: Before ANY interaction with a window, you MUST call desktop_focus_window to bring it to the foreground. Clicks and keystrokes go to the FOCUSED window, not necessarily the window you screenshotted. Skipping this step will cause your actions to hit the wrong window.
 
-2. **Focus before interacting**: Call desktop_focus_window, then screenshot again to confirm focus succeeded. DO NOT click to focus any windows.
+2. **Screenshot to verify focus**: After focusing, call desktop_screenshot_window to confirm the correct window is active and see its current state.
 
 3. **Track coordinates carefully**:
    - The screenshot returns actual dimensions (width/height)
@@ -46,7 +46,16 @@ const DESKTOP_AGENT_PROMPT = `You are a desktop automation specialist. Your job 
 
 4. **Click with desktop_click_in_window**: This is the recommended tool — it handles coordinate math automatically.
 
-5. **Verify after action**: After clicking or typing, take another screenshot to confirm the action succeeded.
+5. **Re-focus after any delay**: If you take multiple actions or there's any pause, RE-FOCUS the window before continuing. Another window may have stolen focus.
+
+6. **Verify after action**: After clicking or typing, take another screenshot to confirm the action succeeded.
+
+## CRITICAL: Focus Rules
+
+- NEVER click or type without calling desktop_focus_window first
+- NEVER assume a window is focused just because you screenshotted it
+- ALWAYS re-focus if you're unsure or after taking multiple screenshots
+- DO NOT click on a window to focus it — use desktop_focus_window instead
 
 ## Coordinate Handling
 
@@ -107,7 +116,7 @@ const desktopClickTool: Tool<any> = {
 
 const desktopClickInWindowTool: Tool<any> = {
   name: 'desktop_click_in_window',
-  description: 'RECOMMENDED: Click at a position RELATIVE to a window. Provide the window title and x,y coordinates within that window (where 0,0 is the top-left corner). This tool handles all coordinate math automatically. IMPORTANT: (1) If the screenshot appears smaller than actual dimensions, provide imageWidth/imageHeight. (2) If you CROPPED the screenshot, provide cropOffsetX/cropOffsetY.',
+  description: 'Click at a position RELATIVE to a window. PREREQUISITE: Call desktop_focus_window FIRST to ensure this window receives the click. Provide the window title and x,y coordinates within that window (where 0,0 is the top-left corner). IMPORTANT: (1) If the screenshot appears smaller than actual dimensions, provide imageWidth/imageHeight. (2) If you CROPPED the screenshot, provide cropOffsetX/cropOffsetY.',
   parameters: {
     type: 'object',
     properties: {
@@ -181,7 +190,7 @@ const desktopClickInWindowTool: Tool<any> = {
 
 const desktopTypeTool: Tool<any> = {
   name: 'desktop_type',
-  description: 'Type text using the keyboard. Text is typed at the current cursor position. Click on an input field first to focus it before typing.',
+  description: 'Type text using the keyboard. PREREQUISITE: Call desktop_focus_window FIRST to ensure the correct window receives input, then click on an input field to place cursor. Text is typed at the current cursor position.',
   parameters: {
     type: 'object',
     properties: {
@@ -205,7 +214,7 @@ const desktopTypeTool: Tool<any> = {
 
 const desktopShortcutTool: Tool<any> = {
   name: 'desktop_shortcut',
-  description: 'Press a keyboard shortcut (e.g., Ctrl+C, Cmd+V, Alt+Tab). Use "Cmd" for macOS Command key, "Ctrl" for Windows/Linux Control key.',
+  description: 'Press a keyboard shortcut (e.g., Ctrl+C, Cmd+V, Alt+Tab). PREREQUISITE: Call desktop_focus_window FIRST to ensure the correct window receives the shortcut. Use "Cmd" for macOS Command key, "Ctrl" for Windows/Linux Control key.',
   parameters: {
     type: 'object',
     properties: {
@@ -322,7 +331,7 @@ const desktopListWindowsTool: Tool<any> = {
 
 const desktopFocusWindowTool: Tool<any> = {
   name: 'desktop_focus_window',
-  description: 'Focus (bring to front) a window by its title. Partial, case-insensitive matching. ALWAYS screenshot after focusing to verify it worked.',
+  description: 'MANDATORY FIRST STEP: Focus (bring to front) a window by its title. You MUST call this before clicking or typing — actions go to the focused window, not necessarily the one you screenshotted. Partial, case-insensitive title matching.',
   parameters: {
     type: 'object',
     properties: {
@@ -417,7 +426,7 @@ const desktopGetWindowBoundsTool: Tool<any> = {
 
 const desktopScreenshotWindowTool: Tool<any> = {
   name: 'desktop_screenshot_window',
-  description: 'Take a screenshot of a specific window by title. Returns base64 PNG with actual dimensions. ALWAYS call this before clicking to verify the window state.',
+  description: 'Take a screenshot of a specific window by title. Returns base64 PNG with actual dimensions. Call AFTER desktop_focus_window to verify the window is active and see its state before interacting.',
   parameters: {
     type: 'object',
     properties: {
@@ -454,15 +463,15 @@ const desktopScreenshotWindowTool: Tool<any> = {
 
 // All tools available to the desktop sub-agent
 const desktopTools: Tool<any>[] = [
-  desktopListDisplaysTool,      // Start here on multi-monitor setups
-  desktopScreenshotWindowTool,  // Primary tool — always start here
-  desktopClickInWindowTool,     // Primary click tool
-  desktopFocusWindowTool,
-  desktopTypeTool,
-  desktopShortcutTool,
+  desktopFocusWindowTool,       // MUST call first before any interaction
+  desktopScreenshotWindowTool,  // Call after focus to verify state
+  desktopClickInWindowTool,     // Primary click tool (requires prior focus)
+  desktopTypeTool,              // Requires prior focus
+  desktopShortcutTool,          // Requires prior focus
   desktopListWindowsTool,
   desktopGetActiveWindowTool,
   desktopGetWindowBoundsTool,
+  desktopListDisplaysTool,      // For multi-monitor setups
   desktopScreenshotTool,        // Monitor screenshot with bounds
   desktopClickTool,             // Advanced fallback
 ]
