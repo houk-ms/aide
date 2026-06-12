@@ -607,6 +607,13 @@ export async function runDesktopSubagent(
     const session = await client.createSession(config as SessionConfig)
     activeDesktopSession = session
     
+    // Signal that desktop sub-agent is starting
+    emitDesktopEvent({
+      type: 'desktop:subagent-start',
+      taskId: null,
+      task
+    })
+    
     // Run with event subscription to capture streaming output
     return new Promise((resolve) => {
       let finalMessage = ''
@@ -617,7 +624,16 @@ export async function runDesktopSubagent(
         switch (event.type) {
           case 'assistant.message_delta': {
             const delta = event.data?.deltaContent || ''
-            if (delta) streamed += delta
+            if (delta) {
+              streamed += delta
+              // Emit to UI so user sees the sub-agent's thinking
+              emitDesktopEvent({
+                type: 'chat:stream',
+                taskId: null,  // Desktop agent runs in main chat
+                delta,
+                source: 'desktop-subagent'
+              })
+            }
             break
           }
           case 'assistant.message': {
@@ -632,6 +648,13 @@ export async function runDesktopSubagent(
             session.disconnect().catch(() => {})
             client.deleteSession(sessionId).catch(() => {})
             
+            // Signal completion
+            emitDesktopEvent({
+              type: 'desktop:subagent-end',
+              taskId: null,
+              success: !aborted
+            })
+            
             resolve({
               success: !aborted,
               summary: aborted ? '' : (finalMessage || streamed || 'Task completed'),
@@ -645,6 +668,14 @@ export async function runDesktopSubagent(
             activeDesktopSession = null
             session.disconnect().catch(() => {})
             client.deleteSession(sessionId).catch(() => {})
+            
+            // Signal error
+            emitDesktopEvent({
+              type: 'desktop:subagent-end',
+              taskId: null,
+              success: false,
+              error: event.data?.message || 'Desktop agent error'
+            })
             
             resolve({
               success: false,
