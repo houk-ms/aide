@@ -63,76 +63,60 @@ const DESKTOP_AGENT_PROMPT = `You are a desktop automation specialist. Your job 
 
 ## Core Workflow
 
-1. **FOCUS FIRST — MANDATORY**: Before ANY interaction with a window, you MUST call desktop_focus_window to bring it to the foreground. Clicks and keystrokes go to the FOCUSED window, not necessarily the window you screenshotted. Skipping this step will cause your actions to hit the wrong window.
+1. **List windows first**: Call desktop_list_windows to see all available windows and their exact titles.
 
-2. **Screenshot to verify focus**: After focusing, call desktop_screenshot_window. It saves the image to a file and returns the path. Then use the \`view\` tool to see the screenshot.
+2. **FOCUS FIRST — MANDATORY**: Before ANY interaction with a window, you MUST call desktop_focus_window to bring it to the foreground. Clicks and keystrokes go to the FOCUSED window, not necessarily the window you screenshotted.
 
-3. **Check screenshot dimensions**: The screenshot result includes:
+3. **Screenshot to verify**: After focusing, call desktop_screenshot_window. It saves the image to a file and returns the path. Then use the \`view\` tool to see the screenshot.
+
+4. **Check screenshot dimensions**: The screenshot result includes:
    - \`width\`/\`height\`: The image dimensions you see
    - \`originalWidth\`/\`originalHeight\`: The actual window dimensions
    - \`scale\`: If less than 1.0, the image was resized to fit model limits
    
-4. **Click with desktop_click_in_window**: When clicking, ALWAYS pass \`imageWidth\` and \`imageHeight\` from the screenshot result. This ensures coordinates are mapped correctly even if the image was resized.
+5. **Click with desktop_click_in_window**: When clicking, ALWAYS pass \`imageWidth\` and \`imageHeight\` from the screenshot result. This ensures coordinates are mapped correctly even if the image was resized.
 
-5. **Re-focus after any delay**: If you take multiple actions or there's any pause, RE-FOCUS the window before continuing. Another window may have stolen focus.
+6. **Re-focus after any delay**: If you take multiple actions or there's any pause, RE-FOCUS the window before continuing. Another window may have stolen focus.
 
-6. **Verify after action**: After clicking or typing, take another screenshot to confirm the action succeeded.
+7. **Verify after action**: After clicking or typing, take another screenshot to confirm the action succeeded.
 
 ## CRITICAL: Focus Rules
 
 - NEVER click or type without calling desktop_focus_window first
 - NEVER assume a window is focused just because you screenshotted it
 - ALWAYS re-focus if you're unsure or after taking multiple screenshots
-- DO NOT click on a window to focus it — use desktop_focus_window instead
+- Use desktop_get_active_window to check which window is currently focused
 
 ## Screenshot Workflow
 
 1. Call \`desktop_screenshot_window\` with the window title
 2. Note the \`width\`, \`height\`, and \`imagePath\` from the result
 3. Call \`view\` with the \`imagePath\` to see the screenshot
-4. Analyze the image and identify coordinates
-5. When clicking, pass \`imageWidth\` and \`imageHeight\` from step 2
-
-## Grid System for Easier Targeting
-
-When exact pixel coordinates are hard to determine, use the grid system:
-
-1. Take a screenshot with \`withGrid=true\`: \`desktop_screenshot_window(title="...", withGrid=true)\`
-2. The image will have red grid lines dividing it into a 4x4 matrix
-3. Cells are labeled A1-D4:
+4. The screenshot has a red 4x4 grid overlay:
    - Columns: A (left), B, C, D (right)
    - Rows: 1 (top), 2, 3, 4 (bottom)
-4. Use \`desktop_click_grid_cell\` to click the center of a cell
-5. Add \`offsetX\`/\`offsetY\` to fine-tune within the cell
-
-Grid cell examples:
-- A1 = top-left quarter
-- D4 = bottom-right quarter
-- B2 = upper-center area
-- C3 = lower-center area
-
-When to use grid vs coordinates:
-- **Grid**: UI element is clearly within a cell, rough targeting is fine
-- **Coordinates**: Need precise click (small button, specific text)
+   - Use grid intersections as reference points for coordinates
+5. Identify the target element's x, y position from the top-left corner
+6. When clicking, pass \`imageWidth\` and \`imageHeight\` from step 2
 
 ## Coordinate Handling
 
 Screenshots may be resized to fit vision model limits (max 1600px on any dimension).
 
-When clicking with exact coordinates:
-1. Identify the element's position in the screenshot image (x, y from top-left)
-2. Pass those coordinates to desktop_click_in_window along with imageWidth and imageHeight
-3. The tool automatically scales coordinates to the actual window size
+When clicking:
+1. Use the grid overlay to help estimate coordinates (each cell is 1/4 of the width/height)
+2. Identify the element's position in the screenshot image (x, y from top-left)
+3. Pass those coordinates to desktop_click_in_window along with imageWidth and imageHeight
+4. The tool automatically scales coordinates to the actual window size
 
-Example: Screenshot result shows width=1600, height=900, originalWidth=2400, originalHeight=1350
-You identify a button at (400, 200) in the image
-→ Call: desktop_click_in_window(title="...", x=400, y=200, imageWidth=1600, imageHeight=900)
-→ Tool scales to (600, 300) in the actual window and clicks there
+Example: Screenshot is 1600x900 pixels
+- Grid cell A1 spans x=0-400, y=0-225
+- Grid cell B2 spans x=400-800, y=225-450
+- A button in the middle of cell C3 would be around (1000, 560)
 
 ## Error Recovery
 
-- If a click misses, screenshot and re-analyze
-- Try the grid system if exact coordinates aren't working
+- If a click misses, screenshot and re-analyze the coordinates using the grid
 - If a window isn't found, use desktop_list_windows to see available windows
 - Report failures clearly so the calling agent can adjust
 
@@ -733,22 +717,22 @@ const desktopClickGridCellTool: Tool<any> = {
 
 const desktopScreenshotWindowTool: Tool<any> = {
   name: 'desktop_screenshot_window',
-  description: 'Take a screenshot of a specific window by title. Saves to a temp file and returns the path. Use the built-in `view` tool to see the image. Set withGrid=true to overlay a 4x4 coordinate grid (cells A1-D4) for easier targeting.',
+  description: 'Take a screenshot of a specific window by title. The screenshot includes a 4x4 grid overlay (cells A1-D4) to help identify click regions. Saves to a temp file and returns the path. Use the built-in `view` tool to see the image.',
   parameters: {
     type: 'object',
     properties: {
-      title: { type: 'string', description: 'Window title to search for (partial match, case-insensitive)' },
-      withGrid: { type: 'boolean', description: 'If true, overlay a 4x4 grid (cells A1-D4) to help identify click regions. Use desktop_click_grid_cell to click by cell.' }
+      title: { type: 'string', description: 'Window title to search for (partial match, case-insensitive)' }
     },
     required: ['title']
   },
   skipPermission: true,
-  handler: async (args: { title: string; withGrid?: boolean }) => {
+  handler: async (args: { title: string }) => {
     if (!isDesktopAvailable()) {
       return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
-      const result = await desktop.takeWindowScreenshotBuffer(args.title, { withGrid: args.withGrid })
+      // Always use grid overlay for easier coordinate identification
+      const result = await desktop.takeWindowScreenshotBuffer(args.title, { withGrid: true })
       if (result) {
         const wasResized = result.scale < 1.0
         
@@ -759,7 +743,14 @@ const desktopScreenshotWindowTool: Tool<any> = {
         fs.writeFileSync(filePath, result.buffer)
         trackScreenshotFile(filePath)  // Track for cleanup
         
-        const response: any = {
+        // Build grid cell info for easy reference
+        const gridCells = result.gridRegions?.map(r => ({
+          cell: r.cell,
+          centerX: r.centerX,
+          centerY: r.centerY
+        })) || []
+        
+        return {
           success: true,
           // File path for viewing with the `view` tool
           imagePath: filePath,
@@ -773,26 +764,17 @@ const desktopScreenshotWindowTool: Tool<any> = {
           originalHeight: result.originalHeight,
           // Scale factor applied (1.0 = no resize)
           scale: result.scale,
+          // Grid info - screenshot has red grid lines dividing it into 4x4 cells
+          grid: {
+            description: 'Screenshot has a 4x4 grid overlay. Columns A-D (left to right), Rows 1-4 (top to bottom).',
+            cells: gridCells
+          },
           // Instructions
           nextStep: `Use the \`view\` tool to see the screenshot at: ${filePath}`,
           coordinateHelp: wasResized
             ? `IMPORTANT: Image was resized from ${result.originalWidth}x${result.originalHeight} to ${result.width}x${result.height} (scale: ${result.scale.toFixed(2)}). When calling desktop_click_in_window, you MUST pass imageWidth=${result.width} and imageHeight=${result.height} so coordinates are scaled correctly.`
             : `Image is at original size: ${result.width}x${result.height}. When clicking, pass imageWidth=${result.width} and imageHeight=${result.height}.`
         }
-        
-        // Include grid info if requested
-        if (args.withGrid && result.gridRegions) {
-          response.gridEnabled = true
-          response.gridCells = result.gridRegions.map(r => ({
-            cell: r.cell,
-            centerX: r.centerX,
-            centerY: r.centerY,
-            bounds: { x: r.x, y: r.y, width: r.width, height: r.height }
-          }))
-          response.gridHelp = 'Screenshot has a 4x4 grid overlay. Cells are labeled A1-D4 (columns A-D, rows 1-4). Use desktop_click_grid_cell to click center of a cell, or use desktop_click_in_window with exact coordinates.'
-        }
-        
-        return response
       } else {
         return { success: false, error: `No window found matching "${args.title}"` }
       }
@@ -804,22 +786,15 @@ const desktopScreenshotWindowTool: Tool<any> = {
 
 // All tools available to the desktop sub-agent
 const desktopTools: Tool<any>[] = [
-  desktopFocusWindowTool,       // MUST call first before any interaction
-  desktopScreenshotWindowTool,  // Call after focus to verify state (supports withGrid option)
+  desktopListWindowsTool,       // Start here to find window titles
+  desktopFocusWindowTool,       // MUST call before any interaction
+  desktopScreenshotWindowTool,  // Call after focus to verify state
+  desktopGetActiveWindowTool,   // Check which window is currently focused
   desktopClickInWindowTool,     // Primary click tool (requires prior focus)
-  desktopClickGridCellTool,     // Click by grid cell (A1-D4) for easier targeting
-  desktopTripleClickTool,       // Select entire line/paragraph
   desktopTypeTool,              // Requires prior focus
   desktopClearInputTool,        // Clear input field before typing
   desktopShortcutTool,          // Requires prior focus
   desktopScrollTool,            // Requires prior focus — try both up AND down
-  desktopWaitTool,              // Wait for UI to update
-  desktopListWindowsTool,
-  desktopGetActiveWindowTool,
-  desktopGetWindowBoundsTool,
-  // Note: desktop_screenshot (full monitor) intentionally excluded to avoid
-  // confusion — agent should always target specific windows with focus workflow
-  desktopClickTool,             // Advanced fallback for absolute coordinates
 ]
 
 // ============================================================
@@ -839,18 +814,9 @@ function summarizeToolInput(toolName: string, args: Record<string, unknown>): st
     const title = args.title || 'screen'
     return `Taking screenshot of ${title}`
   }
-  if (toolName === 'desktop_click' || toolName === 'desktop_click_in_window') {
-    const title = args.title || 'screen'
+  if (toolName === 'desktop_click_in_window') {
+    const title = args.title || 'window'
     return `Click at (${args.x}, ${args.y}) in ${title}`
-  }
-  if (toolName === 'desktop_click_grid_cell') {
-    const title = args.title || 'window'
-    const offset = (args.offsetX || args.offsetY) ? ` +offset(${args.offsetX || 0}, ${args.offsetY || 0})` : ''
-    return `Click cell ${args.cell}${offset} in ${title}`
-  }
-  if (toolName === 'desktop_triple_click') {
-    const title = args.title || 'window'
-    return `Triple-click at (${args.x}, ${args.y}) in ${title}`
   }
   if (toolName === 'desktop_type') {
     const text = String(args.text || '').slice(0, 30)
@@ -866,11 +832,11 @@ function summarizeToolInput(toolName: string, args: Record<string, unknown>): st
   if (toolName === 'desktop_scroll') {
     return `Scroll ${args.direction} by ${args.amount || 300}px`
   }
-  if (toolName === 'desktop_wait') {
-    return `Wait ${args.ms || 500}ms`
-  }
   if (toolName === 'desktop_focus_window') {
     return `Focus window: ${args.title}`
+  }
+  if (toolName === 'desktop_get_active_window') {
+    return 'Get active window'
   }
   if (toolName === 'desktop_list_windows') {
     return 'List all windows'
