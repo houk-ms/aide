@@ -154,37 +154,6 @@ After completing the task (or if it fails), respond with a clear summary:
 // Desktop Tools — Only available to the desktop sub-agent
 // ============================================================
 
-const desktopClickTool: Tool<any> = {
-  name: 'desktop_click',
-  description: 'ADVANCED: Click at absolute screen coordinates. For most cases, use desktop_click_in_window instead — it handles coordinate math automatically. This tool requires you to manually calculate absolute coordinates including multi-monitor offsets.',
-  parameters: {
-    type: 'object',
-    properties: {
-      x: { type: 'number', description: 'Absolute X coordinate across all monitors (pixels from left edge of leftmost monitor)' },
-      y: { type: 'number', description: 'Absolute Y coordinate (pixels from top edge)' },
-      button: { type: 'string', enum: ['left', 'right'], description: 'Mouse button to click (default: left)' },
-      doubleClick: { type: 'boolean', description: 'Whether to double-click (default: false)' }
-    },
-    required: ['x', 'y']
-  },
-  skipPermission: true, // Sub-agent already approved by parent
-  handler: async (args: { x: number; y: number; button?: 'left' | 'right'; doubleClick?: boolean }) => {
-    if (!isDesktopAvailable()) {
-      return { success: false, error: getDesktopUnavailableReason() }
-    }
-    try {
-      if (args.doubleClick) {
-        await desktop.doubleClick(args.x, args.y)
-      } else {
-        await desktop.click(args.x, args.y, args.button || 'left')
-      }
-      return { success: true, message: `Clicked at (${args.x}, ${args.y})` }
-    } catch (err: any) {
-      return { success: false, error: err.message }
-    }
-  }
-}
-
 const desktopClickInWindowTool: Tool<any> = {
   name: 'desktop_click_in_window',
   description: 'Click at a position in a window using grid cell coordinates. PREREQUISITE: Call desktop_focus_window FIRST. Specify a grid cell (A1-H8) from the screenshot overlay. Optionally provide offsetX/offsetY (0-1) for position within the cell (default: 0.5,0.5 = center).',
@@ -641,95 +610,6 @@ const desktopGetWindowBoundsTool: Tool<any> = {
         }
       } else {
         return { success: false, error: `No window found matching "${args.title}"` }
-      }
-    } catch (err: any) {
-      return { success: false, error: err.message }
-    }
-  }
-}
-
-const desktopClickGridCellTool: Tool<any> = {
-  name: 'desktop_click_grid_cell',
-  description: 'Click the center of a grid cell (A1-D4) in a window. PREREQUISITE: Take a screenshot with withGrid=true first. The grid divides the window into a 4x4 matrix: columns A-D (left to right), rows 1-4 (top to bottom). Use this for rough targeting when exact pixel coordinates are hard to determine.',
-  parameters: {
-    type: 'object',
-    properties: {
-      title: { type: 'string', description: 'Window title to click in (partial match)' },
-      cell: { type: 'string', description: 'Grid cell to click (e.g., "B2", "C3"). Columns A-D, rows 1-4.' },
-      imageWidth: { type: 'number', description: 'Width from the screenshot result (required for coordinate scaling)' },
-      imageHeight: { type: 'number', description: 'Height from the screenshot result (required for coordinate scaling)' },
-      offsetX: { type: 'number', description: 'Optional X offset from cell center (positive = right, negative = left)' },
-      offsetY: { type: 'number', description: 'Optional Y offset from cell center (positive = down, negative = up)' },
-      button: { type: 'string', enum: ['left', 'right'], description: 'Mouse button (default: left)' },
-      doubleClick: { type: 'boolean', description: 'Whether to double-click (default: false)' }
-    },
-    required: ['title', 'cell', 'imageWidth', 'imageHeight']
-  },
-  skipPermission: true,
-  handler: async (args: { 
-    title: string
-    cell: string
-    imageWidth: number
-    imageHeight: number
-    offsetX?: number
-    offsetY?: number
-    button?: 'left' | 'right'
-    doubleClick?: boolean 
-  }) => {
-    if (!isDesktopAvailable()) {
-      return { success: false, error: getDesktopUnavailableReason() }
-    }
-    try {
-      const windowInfo = await desktop.getWindowBounds(args.title)
-      if (!windowInfo) {
-        return { success: false, error: `No window found matching "${args.title}"` }
-      }
-      
-      // Use contentBounds if available (on Windows, excludes shadow)
-      const clickBounds = windowInfo.contentBounds || windowInfo.bounds
-      
-      // Get grid cell coordinates
-      const gridCoords = desktop.getGridCellCoords(args.cell, args.imageWidth, args.imageHeight)
-      if (!gridCoords) {
-        return { success: false, error: `Invalid grid cell "${args.cell}". Use A1-D4 (columns A-D, rows 1-4).` }
-      }
-      
-      // Apply optional offset
-      const screenshotX = gridCoords.centerX + (args.offsetX || 0)
-      const screenshotY = gridCoords.centerY + (args.offsetY || 0)
-      
-      // Scale from screenshot to content dimensions
-      const scaleX = clickBounds.width / args.imageWidth
-      const scaleY = clickBounds.height / args.imageHeight
-      const contentX = Math.round(screenshotX * scaleX)
-      const contentY = Math.round(screenshotY * scaleY)
-      
-      // Convert to absolute screen coordinates
-      const absX = clickBounds.left + contentX
-      const absY = clickBounds.top + contentY
-      
-      await desktop.focusWindow(args.title)
-      
-      if (args.doubleClick) {
-        await desktop.doubleClick(absX, absY)
-      } else {
-        await desktop.click(absX, absY, args.button || 'left')
-      }
-      
-      const offsetInfo = (args.offsetX || args.offsetY) 
-        ? ` with offset (${args.offsetX || 0}, ${args.offsetY || 0})` 
-        : ''
-      
-      return {
-        success: true,
-        message: `Clicked center of cell ${args.cell}${offsetInfo} → content (${contentX}, ${contentY}) → screen (${absX}, ${absY})`,
-        cell: args.cell,
-        cellBounds: gridCoords,
-        clickedAt: {
-          screenshot: { x: screenshotX, y: screenshotY },
-          content: { x: contentX, y: contentY },
-          screen: { x: absX, y: absY }
-        }
       }
     } catch (err: any) {
       return { success: false, error: err.message }

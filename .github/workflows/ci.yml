@@ -34,6 +34,15 @@ jobs:
           set -euo pipefail
           cd node_modules
           
+          # @tailwindcss/oxide - required by @tailwindcss/postcss
+          ver=$(node -p "require('./@tailwindcss/oxide/package.json').version")
+          echo "@tailwindcss/oxide version: $ver"
+          npm pack "@tailwindcss/oxide-linux-x64-gnu@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-linux-x64-gnu
+          tar -xzf tailwindcss-oxide-linux-x64-gnu-*.tgz
+          mv package/* @tailwindcss/oxide-linux-x64-gnu/
+          rm -rf package tailwindcss-oxide-linux-x64-gnu-*.tgz
+          
           # lightningcss - required by tailwindcss/postcss
           ver=$(node -p "require('./lightningcss/package.json').version")
           echo "lightningcss version: $ver"
@@ -71,6 +80,7 @@ jobs:
           rm -rf package esbuild-linux-x64-*.tgz
           
           echo "Installed:"
+          ls @tailwindcss/oxide-linux-x64-gnu/*.node 2>/dev/null || echo "  oxide: MISSING"
           ls lightningcss-linux-x64-gnu/*.node 2>/dev/null || echo "  lightningcss: MISSING"
           ls @rollup/rollup-linux-x64-gnu/*.node 2>/dev/null || echo "  rollup: MISSING"
           ls @img/sharp-linux-x64/*.node 2>/dev/null || echo "  sharp: MISSING"
