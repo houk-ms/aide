@@ -314,6 +314,7 @@ export function ChatPanel() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const triggeredTasksRef = useRef<Set<string>>(new Set())
+  const forceTailScrollRef = useRef(false)
 
   const selectedTask = selectedTaskId ? tasks.find(t => t.id === selectedTaskId) : null
   const taskMessageCount = selectedTaskId ? messages.filter(m => m.taskId === selectedTaskId).length : 0
@@ -329,13 +330,15 @@ export function ChatPanel() {
   useEffect(() => {
     const el = scrollContainerRef.current
     if (!el) return
-    if (justSwitchedRef.current) {
+    const forceTailScroll = forceTailScrollRef.current
+    if (justSwitchedRef.current || forceTailScroll) {
       // Don't consume the jump until the freshly-loaded history for THIS session
       // has actually landed. fetchHistory is async, so right after a switch the
       // view may still be showing the previous session's messages — jumping then
       // would land on stale content and leave the new history scrolled up.
-      if (loadedSessionKey !== sessionKey) return
+      if (justSwitchedRef.current && loadedSessionKey !== sessionKey) return
       justSwitchedRef.current = false
+      forceTailScrollRef.current = false
       // Pin to the absolute bottom. Do it now (post-commit) and again over the
       // next frames, since markdown/code/images can grow content height after
       // first paint and async panels (task activity) expand a tick later.
@@ -393,6 +396,7 @@ export function ChatPanel() {
     const toSend = attachments.length > 0
       ? attachments.map(a => ({ name: a.name, type: a.type, dataUrl: a.dataUrl }))
       : undefined
+    forceTailScrollRef.current = true
     sendMessage(trimmed, selectedTaskId, toSend)
     setInput('')
     setAttachments([])
@@ -836,7 +840,7 @@ function ModelTuning({ model, effort, contextTier, onEffort, onContextTier }: {
 
 /* === Task header — title + meta row with a right-aligned facet toolbar === */
 
-type Facet = 'state' | 'activity' | 'files' | null
+type Facet = 'activity' | 'files' | null
 
 function TaskHeader({ task, onBack, refreshKey }: { task: Task; onBack: () => void; refreshKey: number }) {
   const sourceLabel: Record<string, string> = { email: 'Email', github: 'GitHub', teams: 'Teams', calendar: 'Calendar', user: 'Manual', agent: 'Agent' }
@@ -863,7 +867,6 @@ function TaskHeader({ task, onBack, refreshKey }: { task: Task; onBack: () => vo
     setFilesSeenAt(localStorage.getItem(`aide:filesSeen:${task.id}`))
   }, [task.id])
 
-  const hasState = !!task.workingState
   const latestActivityAt = activities[0]?.timestamp ?? null
   const activityUnread = !!latestActivityAt && latestActivityAt !== activitySeenAt && (!activitySeenAt || latestActivityAt > activitySeenAt)
   const latestFileAt = files[0]?.modifiedAt ?? null
@@ -918,9 +921,6 @@ function TaskHeader({ task, onBack, refreshKey }: { task: Task; onBack: () => vo
 
         {/* Facet toolbar — fills the meta row's empty right side */}
         <div className="ml-auto flex items-center gap-0.5 no-drag">
-          {hasState && (
-            <Segment icon={<FileText size={12.5} strokeWidth={2} />} label="State" active={facet === 'state'} onClick={() => toggle('state')} />
-          )}
           <Segment icon={<Activity size={12.5} strokeWidth={2} />} label="Activity" count={activities.length} unread={activityUnread} active={facet === 'activity'} onClick={() => toggle('activity')} />
           <Segment icon={<Files size={12.5} strokeWidth={2} />} label="Files" count={files.length} unread={filesUnread} active={facet === 'files'} onClick={() => toggle('files')} />
         </div>
@@ -929,13 +929,6 @@ function TaskHeader({ task, onBack, refreshKey }: { task: Task; onBack: () => vo
       {/* Expanded facet body — flush, capped height + scroll */}
       {facet && (
         <div className="border-t border-edge/60 bg-surface-1/40 max-h-[260px] overflow-y-auto scrollbar-thin anim-fade-in">
-          {facet === 'state' && (
-            <div className="px-5 py-3">
-              <div className="text-[12.5px] text-text-secondary leading-[1.65] whitespace-pre-wrap break-words select-text">
-                {task.workingState}
-              </div>
-            </div>
-          )}
           {facet === 'activity' && <ActivityTimeline activities={activities} />}
           {facet === 'files' && <FilesPanel taskId={task.id} files={files} />}
         </div>
