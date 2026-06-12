@@ -77,6 +77,17 @@ If you crop an image for analysis, also pass cropOffsetX/cropOffsetY.
 - If a window isn't found, use desktop_list_windows to see available windows
 - Report failures clearly so the calling agent can adjust
 
+## Don't Assume Clean State
+
+The user may have been using the application before you were invoked. Never assume the app is in its initial or default state:
+
+- **Scrolling**: If you need to find something in a list or document, try scrolling BOTH up AND down. The target might be above the current view, not just below.
+- **Navigation**: Check what's already visible before navigating. The user might already be on the right page/tab.
+- **Forms/inputs**: Fields may already have values. Check before typing — you might need to clear first.
+- **Dialogs/popups**: Existing modals or alerts might be open. Handle them before proceeding.
+
+When searching for content: screenshot first to see the current position, then explore in both directions if needed.
+
 ## Response Format
 
 After completing the task (or if it fails), respond with a clear summary:
@@ -151,18 +162,33 @@ const desktopClickInWindowTool: Tool<any> = {
       
       await desktop.focusWindow(args.title)
       
-      // Apply crop offset first (translate from crop-relative to window-relative)
-      let windowX = args.x + (args.cropOffsetX || 0)
-      let windowY = args.y + (args.cropOffsetY || 0)
+      // Warn if window is large but no scaling dimensions provided
+      const MAX_DIM = 1600
+      const windowMaxDim = Math.max(windowInfo.bounds.width, windowInfo.bounds.height)
+      if (windowMaxDim > MAX_DIM && !args.imageWidth) {
+        return {
+          success: false,
+          error: `Window "${windowInfo.title}" is ${windowInfo.bounds.width}x${windowInfo.bounds.height} which exceeds ${MAX_DIM}px. Screenshots are resized, so you MUST pass imageWidth and imageHeight from the screenshot result to click accurately. Re-take the screenshot and use its width/height values.`
+        }
+      }
       
-      // Scale coordinates if image dimensions provided
+      // Coordinate transformation: screenshot-space → window-space
+      // 1. Add crop offset (if agent cropped the screenshot, translate to full-screenshot coords)
+      let screenshotX = args.x + (args.cropOffsetX || 0)
+      let screenshotY = args.y + (args.cropOffsetY || 0)
+      
+      // 2. Scale from screenshot dimensions to actual window dimensions
+      //    (needed if screenshot was resized to fit vision model limits)
+      let windowX = screenshotX
+      let windowY = screenshotY
       if (args.imageWidth && args.imageHeight) {
         const scaleX = windowInfo.bounds.width / args.imageWidth
         const scaleY = windowInfo.bounds.height / args.imageHeight
-        windowX = Math.round(windowX * scaleX)
-        windowY = Math.round(windowY * scaleY)
+        windowX = Math.round(screenshotX * scaleX)
+        windowY = Math.round(screenshotY * scaleY)
       }
       
+      // 3. Convert window-relative to screen-absolute coordinates
       const absX = windowInfo.bounds.left + windowX
       const absY = windowInfo.bounds.top + windowY
       
@@ -236,6 +262,35 @@ const desktopShortcutTool: Tool<any> = {
     try {
       await desktop.pressShortcut(args.shortcut)
       return { success: true, message: `Pressed: ${args.shortcut}` }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }
+}
+
+const desktopScrollTool: Tool<any> = {
+  name: 'desktop_scroll',
+  description: 'Scroll the mouse wheel in the focused window. PREREQUISITE: Call desktop_focus_window FIRST. Use this to navigate through lists, documents, or any scrollable content. Remember: content might be ABOVE or BELOW the current view — try both directions if you don\'t find what you\'re looking for.',
+  parameters: {
+    type: 'object',
+    properties: {
+      direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction' },
+      amount: { type: 'number', description: 'Scroll amount in pixels (default: 300). Larger values scroll further.' }
+    },
+    required: ['direction']
+  },
+  skipPermission: true,
+  handler: async (args: { direction: 'up' | 'down'; amount?: number }) => {
+    if (!isDesktopAvailable()) {
+      return { success: false, error: getDesktopUnavailableReason() }
+    }
+    try {
+      const amount = args.amount || 300
+      await desktop.scroll(amount, args.direction)
+      return { 
+        success: true, 
+        message: `Scrolled ${args.direction} by ${amount}px. Take a screenshot to see the new view.`
+      }
     } catch (err: any) {
       return { success: false, error: err.message }
     }
@@ -485,6 +540,7 @@ const desktopTools: Tool<any>[] = [
   desktopClickInWindowTool,     // Primary click tool (requires prior focus)
   desktopTypeTool,              // Requires prior focus
   desktopShortcutTool,          // Requires prior focus
+  desktopScrollTool,            // Requires prior focus — try both up AND down
   desktopListWindowsTool,
   desktopGetActiveWindowTool,
   desktopGetWindowBoundsTool,
@@ -520,6 +576,9 @@ function summarizeToolInput(toolName: string, args: Record<string, unknown>): st
   }
   if (toolName === 'desktop_shortcut') {
     return `Press: ${args.shortcut}`
+  }
+  if (toolName === 'desktop_scroll') {
+    return `Scroll ${args.direction} by ${args.amount || 300}px`
   }
   if (toolName === 'desktop_focus_window') {
     return `Focus window: ${args.title}`
