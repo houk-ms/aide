@@ -9,9 +9,11 @@ import os from 'os'
 const require = createRequire(import.meta.url)
 
 // Grid configuration for coordinate overlay
-const GRID_COLS = 4  // A, B, C, D columns
-const GRID_ROWS = 4  // 1, 2, 3, 4 rows
+const GRID_COLS = 8  // A, B, C, D, E, F, G, H columns
+const GRID_ROWS = 8  // 1, 2, 3, 4, 5, 6, 7, 8 rows
 const GRID_LINE_COLOR = { r: 255, g: 0, b: 0, a: 180 }  // Semi-transparent red
+const MOUSE_DOT_COLOR = { r: 255, g: 0, b: 0, a: 255 }  // Solid red
+const MOUSE_DOT_RADIUS = 8  // Radius of mouse position indicator
 
 // Windows 10/11 extended frame (shadow) offset
 // The window bounds from nut.js include the invisible DWM shadow
@@ -596,7 +598,7 @@ export function generateGridRegions(imageWidth: number, imageHeight: number): Gr
 }
 
 /**
- * Get coordinates for a grid cell (e.g., "B2") within given image dimensions.
+ * Get coordinates for a grid cell (e.g., "B2", "F7") within given image dimensions.
  * Returns center coordinates and cell bounds, or null if invalid cell.
  */
 export function getGridCellCoords(
@@ -604,7 +606,7 @@ export function getGridCellCoords(
   imageWidth: number,
   imageHeight: number
 ): GridRegion | null {
-  const match = cell.toUpperCase().match(/^([A-D])([1-4])$/)
+  const match = cell.toUpperCase().match(/^([A-H])([1-8])$/)
   if (!match) return null
   
   const col = match[1].charCodeAt(0) - 65  // A=0, B=1, etc.
@@ -632,9 +634,12 @@ export function getGridCellCoords(
 
 /**
  * Add coordinate grid overlay to a PNG buffer using Jimp.
- * Draws grid lines and cell labels (A1, B2, etc.) to help with coordinate identification.
+ * Draws grid lines and optionally a mouse position indicator.
  */
-async function addCoordinateGrid(pngBuffer: Buffer): Promise<Buffer> {
+async function addCoordinateGrid(
+  pngBuffer: Buffer,
+  mousePos?: { x: number; y: number }
+): Promise<Buffer> {
   try {
     // Use modern Jimp API
     const { Jimp } = require('jimp')
@@ -644,8 +649,9 @@ async function addCoordinateGrid(pngBuffer: Buffer): Promise<Buffer> {
     const cellWidth = width / GRID_COLS
     const cellHeight = height / GRID_ROWS
     
-    // Pre-compute color as unsigned 32-bit (>>> 0 converts signed to unsigned)
+    // Pre-compute colors as unsigned 32-bit (>>> 0 converts signed to unsigned)
     const gridColor = ((GRID_LINE_COLOR.r << 24) | (GRID_LINE_COLOR.g << 16) | (GRID_LINE_COLOR.b << 8) | GRID_LINE_COLOR.a) >>> 0
+    const mouseColor = ((MOUSE_DOT_COLOR.r << 24) | (MOUSE_DOT_COLOR.g << 16) | (MOUSE_DOT_COLOR.b << 8) | MOUSE_DOT_COLOR.a) >>> 0
     
     // Draw vertical grid lines
     for (let col = 1; col < GRID_COLS; col++) {
@@ -674,8 +680,22 @@ async function addCoordinateGrid(pngBuffer: Buffer): Promise<Buffer> {
       }
     }
     
-    // Note: Jimp text rendering requires fonts, which is complex.
-    // Instead, we return grid info separately for the agent to reference.
+    // Draw mouse position indicator (filled circle)
+    if (mousePos && mousePos.x >= 0 && mousePos.x < width && mousePos.y >= 0 && mousePos.y < height) {
+      const r = MOUSE_DOT_RADIUS
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          // Check if point is within circle
+          if (dx * dx + dy * dy <= r * r) {
+            const px = Math.round(mousePos.x + dx)
+            const py = Math.round(mousePos.y + dy)
+            if (px >= 0 && px < width && py >= 0 && py < height) {
+              image.setPixelColor(mouseColor, px, py)
+            }
+          }
+        }
+      }
+    }
     
     return await image.getBuffer('image/png')
   } catch (err) {
@@ -918,6 +938,7 @@ export async function takeWindowScreenshotBuffer(
   originalHeight: number
   scale: number
   gridRegions?: GridRegion[]
+  mousePosition?: { x: number; y: number }
 } | null> {
   const nutjs = getNutJs()
   const windowInfo = await getWindowBounds(titleQuery)
@@ -934,6 +955,11 @@ export async function takeWindowScreenshotBuffer(
   // This ensures coordinates in the screenshot map directly to clickable content
   const captureRegion = windowInfo.contentBounds || windowInfo.bounds
   
+  // Get current mouse position relative to the window content area
+  const absoluteMousePos = await getMousePosition()
+  const windowRelativeMouseX = absoluteMousePos.x - captureRegion.left
+  const windowRelativeMouseY = absoluteMousePos.y - captureRegion.top
+  
   // Grab the window region (content only on Windows, full bounds on other platforms)
   const image = await nutjs.screen.grabRegion({
     left: captureRegion.left,
@@ -948,10 +974,17 @@ export async function takeWindowScreenshotBuffer(
   // Resize if needed to fit vision model limits (uses Electron's nativeImage)
   let { buffer, width, height, scale } = resizePngIfNeeded(pngBuffer, image.width, image.height)
   
+  // Scale mouse position to match resized image
+  const scaledMouseX = Math.round(windowRelativeMouseX * scale)
+  const scaledMouseY = Math.round(windowRelativeMouseY * scale)
+  const mouseInWindow = scaledMouseX >= 0 && scaledMouseX < width && scaledMouseY >= 0 && scaledMouseY < height
+  
   // Add coordinate grid if requested
   let gridRegions: GridRegion[] | undefined
   if (options?.withGrid) {
-    buffer = await addCoordinateGrid(buffer)
+    // Pass mouse position to draw indicator
+    const mousePos = mouseInWindow ? { x: scaledMouseX, y: scaledMouseY } : undefined
+    buffer = await addCoordinateGrid(buffer, mousePos)
     gridRegions = generateGridRegions(width, height)
   }
   
@@ -966,6 +999,7 @@ export async function takeWindowScreenshotBuffer(
     originalWidth: image.width,
     originalHeight: image.height,
     scale,
-    gridRegions
+    gridRegions,
+    mousePosition: mouseInWindow ? { x: scaledMouseX, y: scaledMouseY } : undefined
   }
 }

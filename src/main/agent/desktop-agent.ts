@@ -92,31 +92,42 @@ const DESKTOP_AGENT_PROMPT = `You are a desktop automation specialist. Your job 
 1. Call \`desktop_screenshot_window\` with the window title
 2. Note the \`width\`, \`height\`, and \`imagePath\` from the result
 3. Call \`view\` with the \`imagePath\` to see the screenshot
-4. The screenshot has a red 4x4 grid overlay:
-   - Columns: A (left), B, C, D (right)
-   - Rows: 1 (top), 2, 3, 4 (bottom)
-   - Use grid intersections as reference points for coordinates
-5. Identify the target element's x, y position from the top-left corner
+4. The screenshot has:
+   - A red 8x8 grid overlay (columns A-H, rows 1-8) for clicking
+   - A red dot showing the current mouse position (if mouse is over the window)
+5. Identify which grid cell contains your target element
 6. When clicking, pass \`imageWidth\` and \`imageHeight\` from step 2
 
-## Coordinate Handling
+## Clicking with Grid Cells
 
-Screenshots may be resized to fit vision model limits (max 1600px on any dimension).
+The click tool uses grid cells with named positions:
+- \`cell\`: Which grid cell (e.g., "E5", "A1", "H8")
+- \`position\`: Where in the cell - "center" (default), "top-left", "top", "top-right", "left", "right", "bottom-left", "bottom", "bottom-right"
+- \`nudgeRight\`: Pixel adjustment rightward (negative = left)
+- \`nudgeDown\`: Pixel adjustment downward (negative = up)
 
-When clicking:
-1. Use the grid overlay to help estimate coordinates (each cell is 1/4 of the width/height)
-2. Identify the element's position in the screenshot image (x, y from top-left)
-3. Pass those coordinates to desktop_click_in_window along with imageWidth and imageHeight
-4. The tool automatically scales coordinates to the actual window size
+Examples:
+- Button in center of E5 → \`cell: "E5"\`
+- Icon in top-left of B2 → \`cell: "B2", position: "top-left"\`
+- Fine adjustment → \`cell: "G7", position: "center", nudgeRight: 10, nudgeDown: -5\`
 
-Example: Screenshot is 1600x900 pixels
-- Grid cell A1 spans x=0-400, y=0-225
-- Grid cell B2 spans x=400-800, y=225-450
-- A button in the middle of cell C3 would be around (1000, 560)
+The red dot shows current mouse position - use it to verify your clicks landed correctly.
+
+## Click Verification for Typing Tasks
+
+When your task involves typing into input fields, verify each click landed correctly:
+
+1. After clicking on an input field, type "test"
+2. Take a screenshot to see where "test" appeared
+3. If it appeared in the wrong place, undo (Ctrl+Z) and retry with adjusted coordinates
+4. Once verified, undo the "test" (Ctrl+Z) before typing the actual content
+
+This prevents wasted effort from typing into the wrong field.
 
 ## Error Recovery
 
-- If a click misses, screenshot and re-analyze the coordinates using the grid
+- If a click misses, check where the red dot appears in the next screenshot
+- Adjust the cell or offset based on where the dot actually landed
 - If a window isn't found, use desktop_list_windows to see available windows
 - Report failures clearly so the calling agent can adjust
 
@@ -176,28 +187,38 @@ const desktopClickTool: Tool<any> = {
 
 const desktopClickInWindowTool: Tool<any> = {
   name: 'desktop_click_in_window',
-  description: 'Click at a position RELATIVE to a window. PREREQUISITE: Call desktop_focus_window FIRST. Provide x,y coordinates based on the screenshot image. IMPORTANT: If the screenshot was resized (check the "scale" field in screenshot result), you MUST pass imageWidth and imageHeight from the screenshot result so coordinates are scaled correctly.',
+  description: 'Click at a position in a window using grid cell coordinates. PREREQUISITE: Call desktop_focus_window FIRST. Specify a grid cell (A1-H8) from the screenshot overlay. Optionally provide offsetX/offsetY (0-1) for position within the cell (default: 0.5,0.5 = center).',
   parameters: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'Window title to click in (partial match, case-insensitive)' },
-      x: { type: 'number', description: 'X coordinate in the screenshot image (0,0 is top-left)' },
-      y: { type: 'number', description: 'Y coordinate in the screenshot image (0,0 is top-left)' },
-      imageWidth: { type: 'number', description: 'REQUIRED if screenshot was resized: pass the "width" value from the screenshot result' },
-      imageHeight: { type: 'number', description: 'REQUIRED if screenshot was resized: pass the "height" value from the screenshot result' },
-      cropOffsetX: { type: 'number', description: 'If clicking based on a cropped region of the screenshot, the X offset where the crop starts' },
-      cropOffsetY: { type: 'number', description: 'If clicking based on a cropped region of the screenshot, the Y offset where the crop starts' },
+      cell: { type: 'string', description: 'Grid cell from screenshot overlay (e.g., "E5", "A1", "H8"). Columns A-H (left to right), rows 1-8 (top to bottom).' },
+      position: { 
+        type: 'string', 
+        enum: ['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right'],
+        description: 'Where to click within the cell (default: center)'
+      },
+      nudgeRight: { type: 'number', description: 'Pixel adjustment rightward from the position (negative = left). Measured in screenshot pixels.' },
+      nudgeDown: { type: 'number', description: 'Pixel adjustment downward from the position (negative = up). Measured in screenshot pixels.' },
+      imageWidth: { type: 'number', description: 'REQUIRED: pass the "width" value from the screenshot result' },
+      imageHeight: { type: 'number', description: 'REQUIRED: pass the "height" value from the screenshot result' },
       button: { type: 'string', enum: ['left', 'right'], description: 'Mouse button to click (default: left)' },
       doubleClick: { type: 'boolean', description: 'Whether to double-click (default: false)' }
     },
-    required: ['title', 'x', 'y']
+    required: ['title', 'cell', 'imageWidth', 'imageHeight']
   },
   skipPermission: true,
-  handler: async (args: { title: string; x: number; y: number; cropOffsetX?: number; cropOffsetY?: number; imageWidth?: number; imageHeight?: number; button?: 'left' | 'right'; doubleClick?: boolean }) => {
+  handler: async (args: { title: string; cell: string; position?: string; nudgeRight?: number; nudgeDown?: number; imageWidth: number; imageHeight: number; button?: 'left' | 'right'; doubleClick?: boolean }) => {
     if (!isDesktopAvailable()) {
       return { success: false, error: getDesktopUnavailableReason() }
     }
     try {
+      // Parse and validate grid cell
+      const cellCoords = desktop.getGridCellCoords(args.cell, args.imageWidth, args.imageHeight)
+      if (!cellCoords) {
+        return { success: false, error: `Invalid grid cell "${args.cell}". Must be A1-H8 (columns A-H, rows 1-8).` }
+      }
+      
       const windowInfo = await desktop.getWindowBounds(args.title)
       if (!windowInfo) {
         return { success: false, error: `No window found matching "${args.title}"` }
@@ -206,44 +227,46 @@ const desktopClickInWindowTool: Tool<any> = {
       await desktop.focusWindow(args.title)
       
       // Use contentBounds if available (on Windows, excludes shadow)
-      // This matches what the screenshot captures
       const clickBounds = windowInfo.contentBounds || windowInfo.bounds
       
-      // Warn if window is large but no scaling dimensions provided
-      const MAX_DIM = 1600
-      const windowMaxDim = Math.max(clickBounds.width, clickBounds.height)
-      if (windowMaxDim > MAX_DIM && !args.imageWidth) {
-        return {
-          success: false,
-          error: `Window "${windowInfo.title}" is ${clickBounds.width}x${clickBounds.height} which exceeds ${MAX_DIM}px. Screenshots are resized, so you MUST pass imageWidth and imageHeight from the screenshot result to click accurately. Re-take the screenshot and use its width/height values.`
-        }
+      // Map position name to offsets (0-1 range within cell)
+      const positionMap: Record<string, { x: number; y: number }> = {
+        'top-left': { x: 0.15, y: 0.15 },
+        'top': { x: 0.5, y: 0.15 },
+        'top-right': { x: 0.85, y: 0.15 },
+        'left': { x: 0.15, y: 0.5 },
+        'center': { x: 0.5, y: 0.5 },
+        'right': { x: 0.85, y: 0.5 },
+        'bottom-left': { x: 0.15, y: 0.85 },
+        'bottom': { x: 0.5, y: 0.85 },
+        'bottom-right': { x: 0.85, y: 0.85 }
       }
+      const pos = positionMap[args.position || 'center'] || positionMap['center']
       
-      // Coordinate transformation: screenshot-space → window-space
-      // 1. Add crop offset (if agent cropped the screenshot, translate to full-screenshot coords)
-      let screenshotX = args.x + (args.cropOffsetX || 0)
-      let screenshotY = args.y + (args.cropOffsetY || 0)
+      // Calculate base position within cell
+      let screenshotX = cellCoords.x + cellCoords.width * pos.x
+      let screenshotY = cellCoords.y + cellCoords.height * pos.y
       
-      // 2. Scale from screenshot dimensions to actual content dimensions
-      //    (needed if screenshot was resized to fit vision model limits)
-      let contentX = screenshotX
-      let contentY = screenshotY
-      if (args.imageWidth && args.imageHeight) {
-        const scaleX = clickBounds.width / args.imageWidth
-        const scaleY = clickBounds.height / args.imageHeight
-        contentX = Math.round(screenshotX * scaleX)
-        contentY = Math.round(screenshotY * scaleY)
-      }
+      // Apply pixel nudge
+      screenshotX += args.nudgeRight || 0
+      screenshotY += args.nudgeDown || 0
+      screenshotX = Math.round(screenshotX)
+      screenshotY = Math.round(screenshotY)
       
-      // 3. Convert content-relative to screen-absolute coordinates
-      //    clickBounds already accounts for shadow offset on Windows
+      // Scale from screenshot dimensions to actual window content dimensions
+      const scaleX = clickBounds.width / args.imageWidth
+      const scaleY = clickBounds.height / args.imageHeight
+      const contentX = Math.round(screenshotX * scaleX)
+      const contentY = Math.round(screenshotY * scaleY)
+      
+      // Convert content-relative to screen-absolute coordinates
       const absX = clickBounds.left + contentX
       const absY = clickBounds.top + contentY
       
       if (contentX < 0 || contentX > clickBounds.width || contentY < 0 || contentY > clickBounds.height) {
         return { 
           success: false, 
-          error: `Coordinates (${contentX}, ${contentY}) are outside content bounds (${clickBounds.width}x${clickBounds.height}). Window "${windowInfo.title}" content is at screen position (${clickBounds.left}, ${clickBounds.top}).`
+          error: `Coordinates (${contentX}, ${contentY}) are outside content bounds (${clickBounds.width}x${clickBounds.height}).`
         }
       }
       
@@ -253,14 +276,13 @@ const desktopClickInWindowTool: Tool<any> = {
         await desktop.click(absX, absY, args.button || 'left')
       }
       
-      const cropInfo = (args.cropOffsetX || args.cropOffsetY) ? ` (crop offset: +${args.cropOffsetX || 0}, +${args.cropOffsetY || 0})` : ''
-      const scaling = args.imageWidth ? ` (scaled from image ${args.imageWidth}x${args.imageHeight} to content ${clickBounds.width}x${clickBounds.height})` : ''
-      const shadowInfo = windowInfo.shadowOffset ? ` (shadow: ${windowInfo.shadowOffset.left}px left, ${windowInfo.shadowOffset.top}px top)` : ''
+      const nudgeInfo = (args.nudgeRight || args.nudgeDown) ? ` +nudge(${args.nudgeRight || 0}, ${args.nudgeDown || 0})px` : ''
       return { 
         success: true, 
-        message: `Clicked at content (${contentX}, ${contentY}) = screen (${absX}, ${absY}) in "${windowInfo.title}"${cropInfo}${scaling}${shadowInfo}`,
+        message: `Clicked ${args.cell} ${args.position || 'center'}${nudgeInfo} → screen (${absX}, ${absY}) in "${windowInfo.title}"`,
         windowTitle: windowInfo.title,
-        contentBounds: clickBounds,
+        cell: args.cell,
+        position: args.position || 'center',
         clickedAt: { content: { x: contentX, y: contentY }, screen: { x: absX, y: absY } }
       }
     } catch (err: any) {
@@ -743,14 +765,16 @@ const desktopScreenshotWindowTool: Tool<any> = {
         fs.writeFileSync(filePath, result.buffer)
         trackScreenshotFile(filePath)  // Track for cleanup
         
-        // Build grid cell info for easy reference
-        const gridCells = result.gridRegions?.map(r => ({
+        // Build grid cell info for easy reference (just corners for brevity)
+        const gridCorners = result.gridRegions?.filter(r => 
+          ['A1', 'H1', 'A8', 'H8', 'D4', 'E5'].includes(r.cell)
+        ).map(r => ({
           cell: r.cell,
           centerX: r.centerX,
           centerY: r.centerY
         })) || []
         
-        return {
+        const response: Record<string, unknown> = {
           success: true,
           // File path for viewing with the `view` tool
           imagePath: filePath,
@@ -764,10 +788,14 @@ const desktopScreenshotWindowTool: Tool<any> = {
           originalHeight: result.originalHeight,
           // Scale factor applied (1.0 = no resize)
           scale: result.scale,
-          // Grid info - screenshot has red grid lines dividing it into 4x4 cells
+          // Grid info - screenshot has red 8x8 grid
           grid: {
-            description: 'Screenshot has a 4x4 grid overlay. Columns A-D (left to right), Rows 1-4 (top to bottom).',
-            cells: gridCells
+            description: 'Screenshot has an 8x8 grid overlay (columns A-H, rows 1-8). A red dot shows current mouse position.',
+            cellSize: {
+              width: Math.round(result.width / 8),
+              height: Math.round(result.height / 8)
+            },
+            referencePoints: gridCorners
           },
           // Instructions
           nextStep: `Use the \`view\` tool to see the screenshot at: ${filePath}`,
@@ -775,6 +803,14 @@ const desktopScreenshotWindowTool: Tool<any> = {
             ? `IMPORTANT: Image was resized from ${result.originalWidth}x${result.originalHeight} to ${result.width}x${result.height} (scale: ${result.scale.toFixed(2)}). When calling desktop_click_in_window, you MUST pass imageWidth=${result.width} and imageHeight=${result.height} so coordinates are scaled correctly.`
             : `Image is at original size: ${result.width}x${result.height}. When clicking, pass imageWidth=${result.width} and imageHeight=${result.height}.`
         }
+        
+        // Include mouse position if available
+        if (result.mousePosition) {
+          response.mousePosition = result.mousePosition
+          response.mouseInfo = `Red dot on screenshot shows mouse at (${result.mousePosition.x}, ${result.mousePosition.y}). Use this to verify click accuracy.`
+        }
+        
+        return response
       } else {
         return { success: false, error: `No window found matching "${args.title}"` }
       }
