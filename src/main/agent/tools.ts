@@ -25,6 +25,7 @@ export function buildTools(): Tool<any>[] {
     memorySearchTool,
     createTaskTool,
     updateTaskTool,
+    getTaskTool,
     queryTasksTool,
     findRelatedTaskTool,
     addTaskActivityTool,
@@ -303,7 +304,7 @@ const createTaskTool: Tool<any> = {
 
 const updateTaskTool: Tool<any> = {
   name: 'update_aide_task',
-  description: 'Update an Aide task. Change status, priority, title, working_state (progress/outputs), or link to projects.',
+  description: 'Update an Aide task. Change status, priority, title, working_state (progress/outputs), or link to projects. Before changing working_state outside the current task chat, call get_aide_task and preserve still-valid existing context.',
   parameters: {
     type: 'object',
     properties: {
@@ -353,9 +354,49 @@ const updateTaskTool: Tool<any> = {
   }
 }
 
+const getTaskTool: Tool<any> = {
+  name: 'get_aide_task',
+  description: 'Read one Aide task, including its working_state and recent activity. Use before updating working_state so new task context merges with still-valid existing context instead of overwriting it.',
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Task ID' }
+    },
+    required: ['id']
+  },
+  skipPermission: true,
+  handler: async (args: { id: string }) => {
+    const task = getTask(args.id)
+    if (!task) return { found: false, error: 'Task not found' }
+    const activities = listTaskActivities(args.id)
+    return {
+      found: true,
+      task: {
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        priority: task.priority,
+        dueDate: task.dueDate,
+        source: task.source,
+        projectIds: task.projectIds,
+        workingState: task.workingState,
+        result: task.result,
+        lastActivityAt: task.lastActivityAt
+      },
+      recentActivities: activities.slice(0, 10).map(a => ({
+        timestamp: a.timestamp,
+        type: a.type,
+        summary: a.summary,
+        sourceRef: a.sourceRef
+      }))
+    }
+  }
+}
+
 const findRelatedTaskTool: Tool<any> = {
   name: 'find_related_task',
-  description: 'Before creating a new task or attaching progress, use this to check whether a related task already exists. Returns the most likely candidate, a similarity score (0-1), and the match reason. High score (>=0.7) should attach to the existing task; no result means you may create a new one. Passing an external reference (PR#/email ID/message ID) precisely matches a previously bound task.',
+  description: 'Before creating a new task or attaching progress, use this to check whether the same work item already exists. Exact identity signals (sourceRef, PR#/issue#/email/message IDs) match across the full task history because terminal states represent prior decisions about that item. Fuzzy title/description matching is for active and recently closed tasks only. High-score active matches should attach to the existing task; no result means you may create a new one.',
   parameters: {
     type: 'object',
     properties: {

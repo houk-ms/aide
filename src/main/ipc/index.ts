@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { listTasks, getTask, createTask, updateTask, markTaskSeen, snoozeTask, listTaskActivities } from '../tasks'
-import { sendMessage, getChatHistory, confirmAction, triggerFirstMessage, listModels, getSelectedModel, setSelectedModel, stopStream, resetSession } from '../agent'
+import { sendMessage, getChatHistory, confirmAction, triggerFirstMessage, listModels, getSelectedModel, setSelectedModel, getReasoningEffort, setReasoningEffort, getContextTier, setContextTier, stopStream, resetSession } from '../agent'
 import { getL0Content, setL0Content, searchMemory, listMemory, updateMemory, deleteMemory } from '../memory'
 import { listJobs, toggleJob, getJobLastSummary, createJob, updateJob, deleteJob, runJob } from '../jobs'
 import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft, checkCliAvailability, listGhAccounts, switchGhAccount } from '../connections'
@@ -15,7 +15,7 @@ import { listChannels, deliverTo } from '../channels'
 import { listSkills, getSkill, toggleSkill, deleteSkill } from '../skills'
 import { listSources, syncSource, syncAllSources, browseSkills, installFromMarketplace } from '../skills/sources'
 import { getUpdateState, checkForUpdates, downloadUpdate, quitAndInstall } from '../updater'
-import { openArtifact, revealArtifact, artifactExists, listArtifacts, revealArtifactsFolder } from '../files'
+import { openArtifact, readArtifactText, revealArtifact, artifactExists, listArtifacts, revealArtifactsFolder } from '../files'
 import { sdkHealth, sdkError } from '../health'
 
 export function registerIpcHandlers(): void {
@@ -54,6 +54,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('models:list', () => listModels())
   ipcMain.handle('models:getSelected', () => getSelectedModel())
   ipcMain.handle('models:setSelected', (_, modelId) => setSelectedModel(modelId))
+  ipcMain.handle('models:getEffort', (_, modelId) => getReasoningEffort(modelId))
+  ipcMain.handle('models:setEffort', (_, modelId, effort) => setReasoningEffort(modelId, effort))
+  ipcMain.handle('models:getContextTier', (_, modelId) => getContextTier(modelId))
+  ipcMain.handle('models:setContextTier', (_, modelId, tier) => setContextTier(modelId, tier))
 
   // === Memory ===
   ipcMain.handle('memory:getL0', () => getL0Content())
@@ -143,6 +147,7 @@ export function registerIpcHandlers(): void {
 
   // === Files (agent artifacts) ===
   ipcMain.handle('files:open', (_, taskId, ref) => openArtifact(taskId, ref))
+  ipcMain.handle('files:readText', (_, taskId, ref) => readArtifactText(taskId, ref))
   ipcMain.handle('files:reveal', (_, taskId, ref) => revealArtifact(taskId, ref))
   ipcMain.handle('files:exists', (_, taskId, ref) => artifactExists(taskId, ref))
   ipcMain.handle('files:list', (_, taskId) => listArtifacts(taskId))

@@ -184,9 +184,25 @@ export interface BrowsableSkill {
 
 // === Models ===
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ReasoningEffortPreference = 'none' | ReasoningEffort
+export type ContextTier = 'default' | 'long_context'
+
 export interface ModelInfo {
   id: string
   name: string
+  /** Whether this model supports a configurable reasoning-effort level. */
+  supportsReasoningEffort?: boolean
+  /** Reasoning-effort menu options this model accepts (only when supported). */
+  supportedReasoningEfforts?: ReasoningEffortPreference[]
+  /** The model's default reasoning-effort option (only when supported). */
+  defaultReasoningEffort?: ReasoningEffortPreference
+  /** Default-tier context-window size in tokens, when reported by the runtime. */
+  maxContextWindowTokens?: number
+  /** Whether this model offers a long-context tier (per-model capability). */
+  supportsLongContext?: boolean
+  /** Long-context-tier window size in tokens (only when supportsLongContext). */
+  longContextWindowTokens?: number
 }
 
 // === Connection ===
@@ -262,6 +278,15 @@ export interface ArtifactFile {
   modifiedAt: string
 }
 
+export interface ArtifactTextFile extends ArtifactFile {
+  text: string
+  baseUrl?: string
+}
+
+export type ArtifactTextResult =
+  | ({ ok: true } & ArtifactTextFile)
+  | { ok: false; error?: string }
+
 // === IPC API ===
 
 export interface AideAPI {
@@ -286,6 +311,10 @@ export interface AideAPI {
     list(): Promise<ModelInfo[]>
     getSelected(): Promise<string>
     setSelected(modelId: string): Promise<void>
+    getEffort(modelId: string): Promise<ReasoningEffortPreference | null>
+    setEffort(modelId: string, effort: ReasoningEffortPreference | null): Promise<void>
+    getContextTier(modelId: string): Promise<ContextTier>
+    setContextTier(modelId: string, tier: ContextTier): Promise<void>
   }
   memory: {
     getL0(): Promise<string>
@@ -375,6 +404,7 @@ export interface AideAPI {
   }
   files: {
     open(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
+    readText(taskId: string | null, ref: string): Promise<ArtifactTextResult>
     reveal(taskId: string | null, ref: string): Promise<{ ok: boolean; error?: string }>
     exists(taskId: string | null, ref: string): Promise<boolean>
     list(taskId: string | null): Promise<ArtifactFile[]>

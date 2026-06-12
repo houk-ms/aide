@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download } from 'lucide-react'
+import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download, ExternalLink, RotateCw } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useChatStore, GENERAL_KEY } from '../stores/chatStore'
 import type { LiveStep } from '../stores/chatStore'
-import type { ChatMessage, ChatAttachment, PendingAction, ModelInfo, TaskActivity, TurnStep, Task, ArtifactFile } from '@shared/types'
+import type { ChatMessage, ChatAttachment, PendingAction, ModelInfo, TaskActivity, TurnStep, Task, ArtifactFile, ArtifactTextFile, ReasoningEffort, ReasoningEffortPreference, ContextTier } from '@shared/types'
 
 // Stable empty reference so the per-session live selector doesn't return a new
 // array each render (which would thrash zustand's equality check).
@@ -19,6 +19,41 @@ const EMPTY_STEPS: LiveStep[] = []
 // extension. The chip itself confirms the file actually exists before becoming
 // interactive (see FileChip), so a stray code reference never shows a dead link.
 const ARTIFACT_EXT = /\.(md|markdown|txt|csv|tsv|json|ya?ml|pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|svg|html?|zip|log)$/i
+const MARKDOWN_EXT = /\.(md|markdown)$/i
+const HTML_EXT = /\.html?$/i
+
+type TextPreview = ArtifactTextFile & { taskId: string | null; refPath: string }
+
+function basenameOfRef(refPath: string): string {
+  return refPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || refPath
+}
+
+function isMarkdownName(name: string): boolean {
+  return MARKDOWN_EXT.test(name.trim())
+}
+
+function isHtmlName(name: string): boolean {
+  return HTML_EXT.test(name.trim())
+}
+
+async function openArtifactOrPreview(
+  taskId: string | null,
+  refPath: string,
+  onPreview: (preview: TextPreview) => void
+): Promise<void> {
+  const name = basenameOfRef(refPath)
+  if (!isMarkdownName(name) && !isHtmlName(name)) {
+    await window.aide.files.open(taskId, refPath)
+    return
+  }
+
+  const result = await window.aide.files.readText(taskId, refPath)
+  if (result.ok) {
+    onPreview({ ...result, taskId, refPath })
+    return
+  }
+  await window.aide.files.open(taskId, refPath)
+}
 
 function isArtifactCandidate(text: string): boolean {
   const t = text.trim()
@@ -32,8 +67,9 @@ function isArtifactCandidate(text: string): boolean {
 // artifact sandbox; only renders interactive controls once existence is
 // confirmed, otherwise falls back to plain inline code.
 function FileChip({ taskId, refPath }: { taskId: string | null; refPath: string }) {
-  const name = refPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || refPath
+  const name = basenameOfRef(refPath)
   const [exists, setExists] = useState(false)
+  const [preview, setPreview] = useState<TextPreview | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -46,23 +82,26 @@ function FileChip({ taskId, refPath }: { taskId: string | null; refPath: string 
   }
 
   return (
-    <span className="inline-flex items-center gap-0.5 align-middle max-w-full">
-      <button
-        onClick={() => window.aide.files.open(taskId, refPath)}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-surface-2 hover:bg-accent-muted text-accent text-[12px] font-medium transition-colors max-w-full"
-        title={`Open ${name}`}
-      >
-        <FileText size={12} className="shrink-0" />
-        <span className="truncate max-w-[220px]">{name}</span>
-      </button>
-      <button
-        onClick={() => window.aide.files.reveal(taskId, refPath)}
-        className="inline-flex items-center justify-center w-5 h-5 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
-        title="Reveal in folder"
-      >
-        <FolderOpen size={11} />
-      </button>
-    </span>
+    <>
+      <span className="inline-flex items-center gap-0.5 align-middle max-w-full">
+        <button
+          onClick={() => openArtifactOrPreview(taskId, refPath, setPreview)}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-surface-2 hover:bg-accent-muted text-accent text-[12px] font-medium transition-colors max-w-full"
+          title={`${isMarkdownName(name) || isHtmlName(name) ? 'Preview' : 'Open'} ${name}`}
+        >
+          <FileText size={12} className="shrink-0" />
+          <span className="truncate max-w-[220px]">{name}</span>
+        </button>
+        <button
+          onClick={() => window.aide.files.reveal(taskId, refPath)}
+          className="inline-flex items-center justify-center w-5 h-5 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+          title="Reveal in folder"
+        >
+          <FolderOpen size={11} />
+        </button>
+      </span>
+      {preview && <TextPreviewModal preview={preview} onClose={() => setPreview(null)} />}
+    </>
   )
 }
 
@@ -90,6 +129,156 @@ function makeMarkdownComponents(taskId: string | null): Components {
   return components
 }
 
+const chatMdComponentsCache = new Map<string, Components>()
+function makeChatMarkdownComponents(taskId: string | null): Components {
+  const key = taskId ?? '__general__'
+  const cached = chatMdComponentsCache.get(key)
+  if (cached) return cached
+  const components: Components = {
+    h1({ children }) {
+      return <h1 className="mt-3 mb-2 pb-1.5 border-b border-edge-subtle text-[16px] leading-[1.35] font-semibold text-text-primary tracking-normal first:mt-0">{children}</h1>
+    },
+    h2({ children }) {
+      return <h2 className="mt-3.5 mb-1.5 border-l-2 border-edge pl-2 text-[14.5px] leading-[1.4] font-semibold text-text-primary tracking-normal first:mt-0">{children}</h2>
+    },
+    h3({ children }) {
+      return <h3 className="mt-3 mb-1.5 text-[13.5px] leading-[1.45] font-semibold text-text-primary tracking-normal first:mt-0">{children}</h3>
+    },
+    h4({ children }) {
+      return <h4 className="mt-2.5 mb-1 text-[13px] leading-[1.45] font-semibold text-text-primary tracking-normal first:mt-0">{children}</h4>
+    },
+    p({ children }) {
+      return <p className="my-1.5 leading-[1.7] text-text-secondary">{children}</p>
+    },
+    blockquote({ children }) {
+      return <blockquote className="my-2 rounded-r-lg border-l-2 border-edge bg-surface-1/70 px-3 py-1.5 text-text-secondary [&_p]:my-0.5 [&_p]:leading-[1.65]">{children}</blockquote>
+    },
+    hr() {
+      return <hr className="my-3 border-0 border-t border-edge-subtle" />
+    },
+    ul({ children }) {
+      return <ul className="my-1.5 space-y-1 pl-5 list-disc marker:text-text-tertiary/65 text-text-secondary">{children}</ul>
+    },
+    ol({ children }) {
+      return <ol className="my-1.5 space-y-1 pl-5 list-decimal marker:text-text-tertiary text-text-secondary">{children}</ol>
+    },
+    li({ children }) {
+      return <li className="pl-0.5 leading-[1.65]">{children}</li>
+    },
+    strong({ children }) {
+      return <strong className="font-semibold text-text-primary">{children}</strong>
+    },
+    a({ href, children }) {
+      return <a href={href} target="_blank" rel="noreferrer" className="text-accent underline decoration-accent/30 underline-offset-2 hover:decoration-accent">{children}</a>
+    },
+    table({ children }) {
+      return <div className="my-2.5 max-w-full overflow-x-auto rounded-lg border border-edge bg-surface-0 scrollbar-thin"><table className="w-full min-w-[520px] border-collapse text-left text-[12px]">{children}</table></div>
+    },
+    thead({ children }) {
+      return <thead className="bg-surface-1 text-text-primary">{children}</thead>
+    },
+    th({ children }) {
+      return <th className="border-b border-r border-edge last:border-r-0 px-2.5 py-1.5 font-semibold align-top whitespace-nowrap">{children}</th>
+    },
+    td({ children }) {
+      return <td className="border-t border-r border-edge-subtle last:border-r-0 px-2.5 py-1.5 align-top text-text-secondary leading-[1.55]">{children}</td>
+    },
+    pre({ children }) {
+      return <pre className="my-2.5 max-w-full overflow-x-auto rounded-lg border border-edge bg-surface-1 px-3 py-2.5 text-[12px] leading-relaxed text-text-secondary scrollbar-thin">{children}</pre>
+    },
+    code({ className, children }) {
+      const text = String(children ?? '')
+      const isBlock = (className || '').includes('language-') || text.includes('\n')
+      if (!isBlock && isArtifactCandidate(text)) {
+        return <FileChip taskId={taskId} refPath={text.trim()} />
+      }
+      if (isBlock) return <code className={`${className || ''} font-mono`}>{children}</code>
+      return <code className="rounded-md border border-edge-subtle bg-surface-2 px-1.5 py-0.5 font-mono text-[0.86em] text-text-primary">{children}</code>
+    },
+    input({ type, checked }) {
+      if (type === 'checkbox') return <input type="checkbox" checked={checked} readOnly className="mr-2 translate-y-[1px] accent-accent" />
+      return <input type={type} readOnly />
+    }
+  }
+  chatMdComponentsCache.set(key, components)
+  return components
+}
+
+const previewMdComponentsCache = new Map<string, Components>()
+function makePreviewMarkdownComponents(taskId: string | null): Components {
+  const key = taskId ?? '__general__'
+  const cached = previewMdComponentsCache.get(key)
+  if (cached) return cached
+  const components: Components = {
+    h1({ children }) {
+      return <h1 className="mt-0 mb-4 pb-3 border-b border-edge text-[22px] leading-[1.25] font-semibold text-text-primary tracking-normal">{children}</h1>
+    },
+    h2({ children }) {
+      return <h2 className="mt-8 mb-3 border-l-2 border-text-tertiary/60 pl-3 text-[17px] leading-[1.35] font-semibold text-text-primary tracking-normal">{children}</h2>
+    },
+    h3({ children }) {
+      return <h3 className="mt-6 mb-2 text-[15px] leading-[1.4] font-semibold text-text-primary tracking-normal">{children}</h3>
+    },
+    h4({ children }) {
+      return <h4 className="mt-5 mb-2 text-[13.5px] leading-[1.4] font-semibold text-text-primary tracking-normal">{children}</h4>
+    },
+    p({ children }) {
+      return <p className="my-3 text-[14px] leading-[1.85] text-text-secondary">{children}</p>
+    },
+    blockquote({ children }) {
+      return <blockquote className="my-4 rounded-r-xl border-l-4 border-text-tertiary/55 bg-surface-1 px-4 py-2.5 text-text-secondary [&_p]:my-1 [&_p]:text-[13.5px] [&_p]:leading-[1.75]">{children}</blockquote>
+    },
+    hr() {
+      return <hr className="my-6 border-0 border-t border-edge-subtle" />
+    },
+    ul({ children }) {
+      return <ul className="my-3 space-y-1.5 pl-5 list-disc marker:text-text-tertiary text-text-secondary">{children}</ul>
+    },
+    ol({ children }) {
+      return <ol className="my-3 space-y-1.5 pl-5 list-decimal marker:text-text-tertiary text-text-secondary">{children}</ol>
+    },
+    li({ children }) {
+      return <li className="pl-1 text-[14px] leading-[1.75]">{children}</li>
+    },
+    strong({ children }) {
+      return <strong className="font-semibold text-text-primary">{children}</strong>
+    },
+    a({ href, children }) {
+      return <a href={href} target="_blank" rel="noreferrer" className="text-accent underline decoration-accent/30 underline-offset-2 hover:decoration-accent">{children}</a>
+    },
+    table({ children }) {
+      return <div className="my-4 overflow-x-auto rounded-xl border border-edge bg-surface-0 scrollbar-thin"><table className="w-full min-w-[640px] border-collapse text-left text-[12.5px]">{children}</table></div>
+    },
+    thead({ children }) {
+      return <thead className="bg-surface-1 text-text-primary">{children}</thead>
+    },
+    th({ children }) {
+      return <th className="border-b border-r border-edge last:border-r-0 px-3 py-2 font-semibold align-top whitespace-nowrap">{children}</th>
+    },
+    td({ children }) {
+      return <td className="border-t border-r border-edge-subtle last:border-r-0 px-3 py-2 align-top text-text-secondary leading-[1.6]">{children}</td>
+    },
+    pre({ children }) {
+      return <pre className="my-4 overflow-x-auto rounded-xl border border-edge bg-surface-1 px-4 py-3 text-[12.5px] leading-relaxed text-text-secondary shadow-inner scrollbar-thin">{children}</pre>
+    },
+    code({ className, children }) {
+      const text = String(children ?? '')
+      const isBlock = (className || '').includes('language-') || text.includes('\n')
+      if (!isBlock && isArtifactCandidate(text)) {
+        return <FileChip taskId={taskId} refPath={text.trim()} />
+      }
+      if (isBlock) return <code className={`${className || ''} font-mono`}>{children}</code>
+      return <code className="rounded-md border border-edge-subtle bg-surface-2 px-1.5 py-0.5 font-mono text-[0.86em] text-text-primary">{children}</code>
+    },
+    input({ type, checked }) {
+      if (type === 'checkbox') return <input type="checkbox" checked={checked} readOnly className="mr-2 translate-y-[1px] accent-accent" />
+      return <input type={type} readOnly />
+    }
+  }
+  previewMdComponentsCache.set(key, components)
+  return components
+}
+
 interface Attachment {
   id: string
   name: string
@@ -114,6 +303,8 @@ export function ChatPanel() {
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelInfo[]>([])
   const [selectedModel, setSelectedModel] = useState('')
+  const [effort, setEffort] = useState<ReasoningEffortPreference | null>(null)
+  const [contextTier, setContextTier] = useState<ContextTier>('default')
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [showOtherModels, setShowOtherModels] = useState(false)
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -123,8 +314,10 @@ export function ChatPanel() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const triggeredTasksRef = useRef<Set<string>>(new Set())
+  const forceTailScrollRef = useRef(false)
 
   const selectedTask = selectedTaskId ? tasks.find(t => t.id === selectedTaskId) : null
+  const taskMessageCount = selectedTaskId ? messages.filter(m => m.taskId === selectedTaskId).length : 0
 
   useEffect(() => { fetchHistory(selectedTaskId) }, [selectedTaskId])
   // When entering a task/conversation, force-jump to the latest message so the
@@ -137,13 +330,15 @@ export function ChatPanel() {
   useEffect(() => {
     const el = scrollContainerRef.current
     if (!el) return
-    if (justSwitchedRef.current) {
+    const forceTailScroll = forceTailScrollRef.current
+    if (justSwitchedRef.current || forceTailScroll) {
       // Don't consume the jump until the freshly-loaded history for THIS session
       // has actually landed. fetchHistory is async, so right after a switch the
       // view may still be showing the previous session's messages — jumping then
       // would land on stale content and leave the new history scrolled up.
-      if (loadedSessionKey !== sessionKey) return
+      if (justSwitchedRef.current && loadedSessionKey !== sessionKey) return
       justSwitchedRef.current = false
+      forceTailScrollRef.current = false
       // Pin to the absolute bottom. Do it now (post-commit) and again over the
       // next frames, since markdown/code/images can grow content height after
       // first paint and async panels (task activity) expand a tick later.
@@ -167,6 +362,19 @@ export function ChatPanel() {
     window.aide.models.getSelected().then(s => { console.log('[SelectedModel]', s); setSelectedModel(s) })
   }, [])
 
+  // Reasoning effort and context tier are both per-model: reload whenever the
+  // active model changes so the controls reflect that model's saved settings
+  // (effort falls back to the model default; tier falls back to default).
+  useEffect(() => {
+    if (!selectedModel) return
+    let alive = true
+    setEffort(null)
+    setContextTier('default')
+    window.aide.models.getEffort(selectedModel).then(e => { if (alive) setEffort(e) })
+    window.aide.models.getContextTier(selectedModel).then(t => { if (alive) setContextTier(t) })
+    return () => { alive = false }
+  }, [selectedModel])
+
   useEffect(() => {
     if (selectedTaskId && !triggeredTasksRef.current.has(selectedTaskId)) {
       triggeredTasksRef.current.add(selectedTaskId)
@@ -188,6 +396,7 @@ export function ChatPanel() {
     const toSend = attachments.length > 0
       ? attachments.map(a => ({ name: a.name, type: a.type, dataUrl: a.dataUrl }))
       : undefined
+    forceTailScrollRef.current = true
     sendMessage(trimmed, selectedTaskId, toSend)
     setInput('')
     setAttachments([])
@@ -199,6 +408,18 @@ export function ChatPanel() {
     setShowModelPicker(false)
     window.aide.models.setSelected(modelId)
   }, [])
+
+  const handleEffortSelect = useCallback((e: ReasoningEffortPreference) => {
+    if (!selectedModel) return
+    setEffort(e)
+    window.aide.models.setEffort(selectedModel, e)
+  }, [selectedModel])
+
+  const handleContextTierSelect = useCallback((t: ContextTier) => {
+    if (!selectedModel) return
+    setContextTier(t)
+    window.aide.models.setContextTier(selectedModel, t)
+  }, [selectedModel])
 
   const handleFileSelect = useCallback((files: FileList | null) => {
     if (!files) return
@@ -261,7 +482,7 @@ export function ChatPanel() {
     <div className="flex-1 flex flex-col bg-surface-0 min-w-0 min-h-0">
       {/* Header — drag region for frameless window */}
       {selectedTask ? (
-        <TaskHeader task={selectedTask} onBack={() => goHome()} />
+        <TaskHeader task={selectedTask} onBack={() => goHome()} refreshKey={taskMessageCount} />
       ) : (
         <header className="shrink-0">
           <div className="h-[52px] flex items-center gap-2 px-5 drag-region">
@@ -446,6 +667,15 @@ export function ChatPanel() {
                     </>
                   )}
                 </div>
+
+                {/* Thinking effort & context window */}
+                <ModelTuning
+                  model={models.find(m => m.id === selectedModel)}
+                  effort={effort}
+                  contextTier={contextTier}
+                  onEffort={handleEffortSelect}
+                  onContextTier={handleContextTierSelect}
+                />
               </div>
 
               {/* Send / Stop button */}
@@ -476,11 +706,143 @@ export function ChatPanel() {
 
 /* === Task Header === */
 
+/* === Composer model tuning — thinking effort + context window === */
+
+const EFFORT_LABELS: Record<ReasoningEffort, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Xhigh', max: 'Max' }
+type EffortOption = ReasoningEffortPreference
+const EFFORT_DESCRIPTIONS: Record<EffortOption, string> = {
+  none: 'No reasoning applied',
+  low: 'Faster responses with less reasoning',
+  medium: 'Balanced reasoning and speed',
+  high: 'Greater reasoning depth but slower',
+  xhigh: 'Highest reasoning depth but slowest',
+  max: 'Absolute maximum capability with no constraints'
+}
+
+// Safe label for any effort preference, including unknown values the SDK might
+// report that we don't have a friendly name for.
+function effortLabelOf(e: EffortOption): string {
+  if (e === 'none') return 'None'
+  return EFFORT_LABELS[e] ?? e
+}
+
+// Format a token count the way model cards do: 1,000,000 -> "1M", 272,000 ->
+// "272K". Returns null when the count is missing so callers can fall back.
+function formatTokens(tokens?: number): string | null {
+  if (!tokens || tokens <= 0) return null
+  if (tokens >= 1_000_000) {
+    // Round to the nearest 0.5M so 1,000,000 and 1,050,000 both read "1M",
+    // matching how GitHub Copilot labels million-token windows.
+    const m = Math.round(tokens / 500_000) / 2
+    return `${Number.isInteger(m) ? m : m.toFixed(1).replace(/\.0$/, '')}M`
+  }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`
+  return `${tokens}`
+}
+
+// Sits beside the model picker in the composer, expanded like GitHub Copilot:
+// model name, effort, and context size are separate horizontal chips.
+function ModelTuning({ model, effort, contextTier, onEffort, onContextTier }: {
+  model?: ModelInfo
+  effort: ReasoningEffortPreference | null
+  contextTier: ContextTier
+  onEffort: (e: ReasoningEffortPreference) => void
+  onContextTier: (t: ContextTier) => void
+}) {
+  const [open, setOpen] = useState<'effort' | 'context' | null>(null)
+  // Effort options come straight from the model — never fabricate levels or
+  // prepend None unless the model explicitly advertises it.
+  const supportsEffort = !!model?.supportsReasoningEffort
+  const effortValues = supportsEffort ? (model?.supportedReasoningEfforts ?? []) : []
+  const effortOptions: EffortOption[] = effortValues
+  const defaultEffort = model?.defaultReasoningEffort
+  const fallbackEffort: EffortOption = (defaultEffort && effortOptions.includes(defaultEffort) ? defaultEffort : effortOptions[0]) ?? 'none'
+  const rawEffort: EffortOption = effort ?? defaultEffort ?? fallbackEffort
+  // Never surface an effort the current model can't actually use.
+  const currentEffort: EffortOption = effortOptions.includes(rawEffort) ? rawEffort : fallbackEffort
+  // Long context is a per-model capability: only models that advertise a long
+  // tier get a context chip, with each tier's real window size.
+  const supportsLong = !!model?.supportsLongContext
+  const defaultLabel = formatTokens(model?.maxContextWindowTokens)
+  const longLabel = formatTokens(model?.longContextWindowTokens)
+  const contextLabel = contextTier === 'long_context' ? (longLabel ?? 'Long') : (defaultLabel ?? 'Default')
+
+  return (
+    <div className="flex items-center gap-1 min-w-0">
+      {open && <div className="fixed inset-0 z-40" onClick={() => setOpen(null)} />}
+      {effortOptions.length > 0 && (
+        <div className="relative">
+          <button
+            onClick={() => setOpen(open === 'effort' ? null : 'effort')}
+            className="h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors"
+            title="Thinking effort"
+          >
+            <span>{effortLabelOf(currentEffort)}</span>
+            <ChevronDown size={11} />
+          </button>
+          {open === 'effort' && (
+            <div className="absolute bottom-full left-0 mb-1.5 bg-surface-0 border border-edge rounded-xl shadow-lg p-2 w-[390px] max-w-[calc(100vw-32px)] z-50 anim-fade-in">
+              <div className="px-1.5 pb-1.5 text-[12px] font-semibold text-text-tertiary">Thinking Effort</div>
+              {effortOptions.map(e => {
+                const selected = e === currentEffort
+                const label = `${effortLabelOf(e)}${e !== 'none' && e === defaultEffort ? ' (default)' : ''}`
+                return (
+                <button
+                  key={e}
+                  onClick={() => { onEffort(e); setOpen(null) }}
+                  className={`w-full px-2 py-1.5 rounded-lg text-left text-[13px] transition-colors grid grid-cols-[20px_1fr_auto] items-center gap-2 ${selected ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'}`}
+                >
+                  <span className="w-4 text-accent">{selected && <Check size={14} />}</span>
+                  <span>{label}</span>
+                  <span className="text-[12px] text-text-tertiary whitespace-nowrap">{EFFORT_DESCRIPTIONS[e]}</span>
+                </button>
+              )})}
+              <div className="mt-1.5 px-2 pt-1.5 border-t border-edge text-[12px] text-text-tertiary">Higher levels of thinking may increase costs</div>
+            </div>
+          )}
+        </div>
+      )}
+      {supportsLong && (
+        <div className="relative">
+          <button
+            onClick={() => setOpen(open === 'context' ? null : 'context')}
+            className="h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors tabular-nums"
+            title="Context window"
+          >
+            <span>{contextLabel}</span>
+            <ChevronDown size={11} />
+          </button>
+          {open === 'context' && (
+            <div className="absolute bottom-full left-0 mb-1.5 bg-surface-0 border border-edge rounded-xl shadow-lg p-2 w-[220px] z-50 anim-fade-in">
+              <div className="px-1.5 pb-1.5 text-[12px] font-semibold text-text-tertiary">Context Size</div>
+              {[
+                { tier: 'default' as ContextTier, label: 'Default', detail: defaultLabel ? `${defaultLabel} tokens` : 'Standard window' },
+                { tier: 'long_context' as ContextTier, label: 'Long context', detail: longLabel ? `${longLabel} tokens` : 'Extended window' }
+              ].map(o => (
+                <button
+                  key={o.tier}
+                  onClick={() => { onContextTier(o.tier); setOpen(null) }}
+                  className={`w-full px-2 py-1.5 rounded-lg text-left text-[13px] transition-colors grid grid-cols-[20px_1fr_auto] items-center gap-2 ${o.tier === contextTier ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'}`}
+                >
+                  <span className="w-4 text-accent">{o.tier === contextTier && <Check size={14} />}</span>
+                  <span>{o.label}</span>
+                  <span className="text-[12px] text-text-tertiary whitespace-nowrap tabular-nums">{o.detail}</span>
+                </button>
+              ))}
+              <div className="mt-1.5 px-2 pt-1.5 border-t border-edge text-[12px] text-text-tertiary leading-snug">Larger context may increase cost</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* === Task header — title + meta row with a right-aligned facet toolbar === */
 
-type Facet = 'state' | 'activity' | 'files' | null
+type Facet = 'activity' | 'files' | null
 
-function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
+function TaskHeader({ task, onBack, refreshKey }: { task: Task; onBack: () => void; refreshKey: number }) {
   const sourceLabel: Record<string, string> = { email: 'Email', github: 'GitHub', teams: 'Teams', calendar: 'Calendar', user: 'Manual', agent: 'Agent' }
   const statusLabel: Record<string, string> = { pending: 'Pending', in_progress: 'In progress', completed: 'Completed', cancelled: 'Cancelled' }
 
@@ -490,22 +852,26 @@ function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
   const [activities, setActivities] = useState<TaskActivity[]>([])
   const [files, setFiles] = useState<ArtifactFile[]>([])
   const [activitySeenAt, setActivitySeenAt] = useState<string | null>(null)
+  const [filesSeenAt, setFilesSeenAt] = useState<string | null>(null)
+  const headerRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     let alive = true
     window.aide.tasks.listActivities(task.id).then(a => { if (alive) setActivities(a) }).catch(() => {})
     window.aide.files.list(task.id).then(f => { if (alive) setFiles(f) }).catch(() => {})
     return () => { alive = false }
-  }, [task.id, task.lastActivityAt])
+  }, [task.id, task.lastActivityAt, refreshKey])
 
-  // Last-seen activity marker, persisted per task so the unread dot survives restarts.
+  // Last-seen markers, persisted per task so the unread dot survives restarts.
   useEffect(() => {
     setActivitySeenAt(localStorage.getItem(`aide:activitySeen:${task.id}`))
+    setFilesSeenAt(localStorage.getItem(`aide:filesSeen:${task.id}`))
   }, [task.id])
 
-  const hasState = !!task.workingState
   const latestActivityAt = activities[0]?.timestamp ?? null
   const activityUnread = !!latestActivityAt && latestActivityAt !== activitySeenAt && (!activitySeenAt || latestActivityAt > activitySeenAt)
+  const latestFileAt = files[0]?.modifiedAt ?? null
+  const filesUnread = !!latestFileAt && latestFileAt !== filesSeenAt && (!filesSeenAt || latestFileAt > filesSeenAt)
 
   // Mark Activity as seen whenever its panel is open — covers both opening it
   // and new entries arriving live while it stays open.
@@ -516,10 +882,30 @@ function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
     }
   }, [facet, latestActivityAt, activitySeenAt, task.id])
 
+  // Same for Files — opening the panel clears the unread dot.
+  useEffect(() => {
+    if (facet === 'files' && latestFileAt && latestFileAt !== filesSeenAt) {
+      localStorage.setItem(`aide:filesSeen:${task.id}`, latestFileAt)
+      setFilesSeenAt(latestFileAt)
+    }
+  }, [facet, latestFileAt, filesSeenAt, task.id])
+
   const toggle = (f: Exclude<Facet, null>) => setFacet(cur => (cur === f ? null : f))
 
+  useEffect(() => {
+    if (!facet) return
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const el = headerRef.current
+      if (el && event.target instanceof Node && !el.contains(event.target)) {
+        setFacet(null)
+      }
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true)
+  }, [facet])
+
   return (
-    <header className="shrink-0">
+    <header ref={headerRef} className="shrink-0">
       <div className="flex items-center gap-2 px-5 h-[52px] drag-region">
         <button onClick={onBack} className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors no-drag" title="Back">
           <ChevronLeft size={16} strokeWidth={2} />
@@ -548,28 +934,14 @@ function TaskHeader({ task, onBack }: { task: Task; onBack: () => void }) {
 
         {/* Facet toolbar — fills the meta row's empty right side */}
         <div className="ml-auto flex items-center gap-0.5 no-drag">
-          {hasState && (
-            <Segment icon={<FileText size={12.5} strokeWidth={2} />} label="State" active={facet === 'state'} onClick={() => toggle('state')} />
-          )}
-          {activities.length > 0 && (
-            <Segment icon={<Activity size={12.5} strokeWidth={2} />} label="Activity" count={activities.length} unread={activityUnread} active={facet === 'activity'} onClick={() => toggle('activity')} />
-          )}
-          {files.length > 0 && (
-            <Segment icon={<Files size={12.5} strokeWidth={2} />} label="Files" count={files.length} active={facet === 'files'} onClick={() => toggle('files')} />
-          )}
+          <Segment icon={<Activity size={12.5} strokeWidth={2} />} label="Activity" count={activities.length} unread={activityUnread} active={facet === 'activity'} onClick={() => toggle('activity')} />
+          <Segment icon={<Files size={12.5} strokeWidth={2} />} label="Files" count={files.length} unread={filesUnread} active={facet === 'files'} onClick={() => toggle('files')} />
         </div>
       </div>
 
       {/* Expanded facet body — flush, capped height + scroll */}
       {facet && (
         <div className="border-t border-edge/60 bg-surface-1/40 max-h-[260px] overflow-y-auto scrollbar-thin anim-fade-in">
-          {facet === 'state' && (
-            <div className="px-5 py-3">
-              <div className="text-[12.5px] text-text-secondary leading-[1.65] whitespace-pre-wrap break-words select-text">
-                {task.workingState}
-              </div>
-            </div>
-          )}
           {facet === 'activity' && <ActivityTimeline activities={activities} />}
           {facet === 'files' && <FilesPanel taskId={task.id} files={files} />}
         </div>
@@ -611,6 +983,8 @@ function Segment({ icon, label, count, unread, active, onClick }: {
 /* === Files facet — browse everything a task produced === */
 
 function FilesPanel({ taskId, files }: { taskId: string | null; files: ArtifactFile[] }) {
+  const [preview, setPreview] = useState<TextPreview | null>(null)
+
   if (files.length === 0) {
     return (
       <div className="px-4 py-5 text-center text-[12px] text-text-tertiary">
@@ -619,37 +993,40 @@ function FilesPanel({ taskId, files }: { taskId: string | null; files: ArtifactF
     )
   }
   return (
-    <div className="px-3 py-2">
-      {files.map(f => (
-        <div
-          key={f.name}
-          className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-2/60 transition-colors"
-        >
-          <button
-            onClick={() => window.aide.files.open(taskId, f.name)}
-            className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
-            title={`Open ${f.name}`}
+    <>
+      <div className="px-3 py-2">
+        {files.map(f => (
+          <div
+            key={f.name}
+            className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-2/60 transition-colors"
           >
-            <div className="w-7 h-7 rounded-md bg-surface-2 flex items-center justify-center shrink-0 text-text-secondary">
-              <FileGlyph name={f.name} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[12.5px] text-text-primary truncate group-hover:text-accent transition-colors">{f.name}</div>
-              <div className="text-[11px] text-text-tertiary tabular-nums">
-                {formatBytes(f.size)} · {formatActivityTime(f.modifiedAt)}
+            <button
+              onClick={() => openArtifactOrPreview(taskId, f.name, setPreview)}
+              className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
+              title={`${isMarkdownName(f.name) || isHtmlName(f.name) ? 'Preview' : 'Open'} ${f.name}`}
+            >
+              <div className="w-7 h-7 rounded-md bg-surface-2 flex items-center justify-center shrink-0 text-text-secondary">
+                <FileGlyph name={f.name} />
               </div>
-            </div>
-          </button>
-          <button
-            onClick={() => window.aide.files.reveal(taskId, f.name)}
-            className="inline-flex items-center justify-center w-6 h-6 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0 opacity-0 group-hover:opacity-100"
-            title="Reveal in folder"
-          >
-            <FolderOpen size={12} />
-          </button>
-        </div>
-      ))}
-    </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[12.5px] text-text-primary truncate group-hover:text-accent transition-colors">{f.name}</div>
+                <div className="text-[11px] text-text-tertiary tabular-nums">
+                  {formatBytes(f.size)} · {formatActivityTime(f.modifiedAt)}
+                </div>
+              </div>
+            </button>
+            <button
+              onClick={() => window.aide.files.reveal(taskId, f.name)}
+              className="inline-flex items-center justify-center w-6 h-6 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0 opacity-0 group-hover:opacity-100"
+              title="Reveal in folder"
+            >
+              <FolderOpen size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+      {preview && <TextPreviewModal preview={preview} onClose={() => setPreview(null)} />}
+    </>
   )
 }
 
@@ -822,6 +1199,142 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
   )
 }
 
+function withHtmlHeadHints(text: string, baseUrl?: string): string {
+  const tags: string[] = []
+  if (baseUrl && !/<base\s/i.test(text)) tags.push(`<base href="${baseUrl}">`)
+  if (!/<meta\s+name=["']viewport["']/i.test(text)) tags.push('<meta name="viewport" content="width=device-width, initial-scale=1">')
+  if (tags.length === 0) return text
+  const head = tags.join('')
+  if (/<head[^>]*>/i.test(text)) return text.replace(/<head([^>]*)>/i, `<head$1>${head}`)
+  return `<head>${head}</head>\n${text}`
+}
+
+function TextPreviewModal({ preview, onClose }: { preview: TextPreview; onClose: () => void }) {
+  return isHtmlName(preview.name)
+    ? <HtmlPreviewModal preview={preview} onClose={onClose} />
+    : <MarkdownPreviewModal preview={preview} onClose={onClose} />
+}
+
+function MarkdownPreviewModal({ preview, onClose }: { preview: TextPreview; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev }
+  }, [onClose])
+
+  const meta = [formatBytes(preview.size), formatActivityTime(preview.modifiedAt)].filter(Boolean).join(' · ')
+  const components = useMemo(() => makePreviewMarkdownComponents(preview.taskId), [preview.taskId])
+
+  return (
+    <PreviewShell preview={preview} meta={meta} icon={<FileText size={16} />} onClose={onClose} className="max-w-5xl max-h-[88vh]">
+        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin bg-gradient-to-b from-surface-0 to-surface-1/35">
+          <article className="mx-auto w-full max-w-[900px] px-5 py-6 md:px-10 md:py-8 select-text">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{preview.text}</ReactMarkdown>
+          </article>
+        </div>
+    </PreviewShell>
+  )
+}
+
+function HtmlPreviewModal({ preview, onClose }: { preview: TextPreview; onClose: () => void }) {
+  const [frameKey, setFrameKey] = useState(0)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev }
+  }, [onClose])
+
+  const meta = [formatBytes(preview.size), formatActivityTime(preview.modifiedAt)].filter(Boolean).join(' · ')
+  const srcDoc = useMemo(() => withHtmlHeadHints(preview.text, preview.baseUrl), [preview.text, preview.baseUrl])
+
+  return (
+    <PreviewShell
+      preview={preview}
+      meta={meta}
+      icon={<FileCode size={16} />}
+      onClose={onClose}
+      className="max-w-6xl h-[88vh]"
+      actions={(
+        <button
+          onClick={() => setFrameKey(k => k + 1)}
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+          title="Reload preview"
+        >
+          <RotateCw size={15} />
+        </button>
+      )}
+    >
+        <iframe
+          key={frameKey}
+          title={preview.name}
+          srcDoc={srcDoc}
+          sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+          className="flex-1 min-h-0 w-full border-0 bg-white"
+        />
+    </PreviewShell>
+  )
+}
+
+function PreviewShell({ preview, meta, icon, actions, className, children, onClose }: {
+  preview: TextPreview
+  meta: string
+  icon: React.ReactNode
+  actions?: React.ReactNode
+  className: string
+  children: React.ReactNode
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[2px] p-3 md:p-6 anim-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className={`w-full flex flex-col overflow-hidden rounded-2xl border border-edge bg-surface-0 shadow-2xl anim-zoom-in ${className}`}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-edge-subtle bg-surface-0/95 backdrop-blur">
+          <div className="w-8 h-8 rounded-lg bg-accent-muted text-accent flex items-center justify-center shrink-0">
+            {icon}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-[14px] font-semibold text-text-primary truncate" title={preview.name}>{preview.name}</h3>
+            <p className="text-[11px] text-text-tertiary tabular-nums mt-0.5">{meta}</p>
+          </div>
+          {actions}
+          <button
+            onClick={() => window.aide.files.open(preview.taskId, preview.refPath)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+            title="Open externally"
+          >
+            <ExternalLink size={15} />
+          </button>
+          <button
+            onClick={() => window.aide.files.reveal(preview.taskId, preview.refPath)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+            title="Reveal in folder"
+          >
+            <FolderOpen size={15} />
+          </button>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+            title="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 // Renders the files a user attached to a message. Images become inline
 // thumbnails (click to open a full-screen preview), audio/video get a compact
 // inline player, and everything else a labeled chip (click to open/download) —
@@ -924,8 +1437,8 @@ function MessageBubbleInner({ message }: { message: ChatMessage }) {
             {isUser ? (
               <div className="whitespace-pre-wrap break-words select-text">{message.content}</div>
             ) : (
-              <div className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 select-text">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={makeMarkdownComponents(message.taskId)}>{message.content}</ReactMarkdown>
+              <div className="max-w-none select-text text-[14px] leading-[1.7] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={makeChatMarkdownComponents(message.taskId)}>{message.content}</ReactMarkdown>
               </div>
             )}
           </div>

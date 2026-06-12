@@ -26,6 +26,27 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outRoot = join(projectRoot, 'models', MODEL_ID)
 const force = process.argv.includes('--force')
 
+// An HTTP error we know is worth retrying (rate limiting or a transient server
+// fault). Carries the parsed Retry-After delay in ms when the server sent one.
+class RetryableHttpError extends Error {
+  constructor(statusCode, retryAfterMs) {
+    super(`HTTP ${statusCode}`)
+    this.statusCode = statusCode
+    this.retryAfterMs = retryAfterMs
+  }
+}
+
+// Retry-After is either a seconds count or an HTTP date; return a delay in ms.
+function parseRetryAfter(value) {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const when = Date.parse(value)
+  return Number.isNaN(when) ? undefined : Math.max(0, when - Date.now())
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
 function download(url, dest, redirects = 0) {
   return new Promise((resolvePromise, reject) => {
     if (redirects > 5) return reject(new Error('too many redirects'))
@@ -34,6 +55,14 @@ function download(url, dest, redirects = 0) {
         res.destroy()
         const next = new URL(res.headers.location, url).toString()
         resolvePromise(download(next, dest, redirects + 1))
+        return
+      }
+      // 429 (rate limit) and 5xx are transient — surface them as retryable so
+      // the caller can back off instead of failing the whole build.
+      if (res.statusCode === 429 || res.statusCode >= 500) {
+        const retryAfter = parseRetryAfter(res.headers['retry-after'])
+        res.destroy()
+        reject(new RetryableHttpError(res.statusCode, retryAfter))
         return
       }
       if (res.statusCode !== 200) {
@@ -63,23 +92,23 @@ function download(url, dest, redirects = 0) {
   })
 }
 
-/** Download with retries for transient failures */
-async function downloadWithRetry(url, dest, maxRetries = 3) {
-  let lastError
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+// Wrap download() with bounded exponential backoff. Concurrent matrix jobs all
+// pull from the Hub at once, so a single 429 is common and transient; retrying
+// with backoff (honoring Retry-After) keeps the release from flaking.
+async function downloadWithRetry(url, dest, attempts = 5) {
+  for (let attempt = 1; ; attempt++) {
     try {
-      await download(url, dest)
-      return
+      return await download(url, dest)
     } catch (err) {
-      lastError = err
-      if (attempt < maxRetries) {
-        const delay = attempt * 2000 // 2s, 4s, 6s
-        console.log(`[fetch-model]   retry ${attempt}/${maxRetries - 1} in ${delay / 1000}s...`)
-        await new Promise(r => setTimeout(r, delay))
-      }
+      const retryable = err instanceof RetryableHttpError || err.code === 'ECONNRESET' || err.message === 'timeout'
+      if (!retryable || attempt >= attempts) throw err
+      const backoff = Math.min(30000, 1000 * 2 ** (attempt - 1))
+      const jitter = Math.floor(Math.random() * 500)
+      const wait = (err.retryAfterMs ?? backoff) + jitter
+      console.warn(`[fetch-model]   ${err.message}; retry ${attempt}/${attempts - 1} in ${(wait / 1000).toFixed(1)}s`)
+      await sleep(wait)
     }
   }
-  throw lastError || new Error('download failed')
 }
 
 let failed = false
