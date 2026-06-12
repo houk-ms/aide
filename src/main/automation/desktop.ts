@@ -1,5 +1,5 @@
 import { createRequire } from 'module'
-import { app, screen as electronScreen } from 'electron'
+import { app, screen as electronScreen, nativeImage } from 'electron'
 import path from 'path'
 import fs from 'fs'
 
@@ -10,6 +10,12 @@ const require = createRequire(import.meta.url)
 // ============================================================
 // Desktop Automation Module — nut.js-based desktop control
 // ============================================================
+
+// Maximum screenshot dimension to avoid overwhelming vision models
+// Most models internally resize to ~1500-2000px, so we cap at 1600 to:
+// 1. Reduce data transfer size
+// 2. Ensure coordinates returned by the model are accurate (no hidden rescaling)
+const MAX_SCREENSHOT_DIMENSION = 1600
 
 // Type definitions for nut.js (runtime-loaded native module)
 interface WindowHandle {
@@ -492,6 +498,43 @@ function crc32Compute(buf: Buffer): number {
 }
 
 /**
+ * Resize a PNG buffer if it exceeds MAX_SCREENSHOT_DIMENSION.
+ * Uses Electron's nativeImage for reliable resizing without external dependencies.
+ * Returns { buffer, width, height, scale } where scale is the resize factor applied.
+ * If no resize needed, scale = 1.0
+ */
+function resizePngIfNeeded(
+  pngBuffer: Buffer,
+  originalWidth: number,
+  originalHeight: number
+): { buffer: Buffer; width: number; height: number; scale: number } {
+  const maxDim = Math.max(originalWidth, originalHeight)
+  
+  if (maxDim <= MAX_SCREENSHOT_DIMENSION) {
+    // No resize needed
+    return { buffer: pngBuffer, width: originalWidth, height: originalHeight, scale: 1.0 }
+  }
+  
+  // Calculate scale to fit within MAX_SCREENSHOT_DIMENSION
+  const scale = MAX_SCREENSHOT_DIMENSION / maxDim
+  const newWidth = Math.round(originalWidth * scale)
+  const newHeight = Math.round(originalHeight * scale)
+  
+  try {
+    // Use Electron's built-in nativeImage for resizing
+    const image = nativeImage.createFromBuffer(pngBuffer)
+    const resized = image.resize({ width: newWidth, height: newHeight, quality: 'better' })
+    const resizedBuffer = resized.toPNG()
+    
+    return { buffer: resizedBuffer, width: newWidth, height: newHeight, scale }
+  } catch (err) {
+    // If resize fails, return original
+    console.warn('[Desktop] Failed to resize screenshot:', err)
+    return { buffer: pngBuffer, width: originalWidth, height: originalHeight, scale: 1.0 }
+  }
+}
+
+/**
  * Get screen dimensions
  */
 export async function getScreenSize(): Promise<{ width: number; height: number }> {
@@ -680,9 +723,19 @@ export async function takeWindowScreenshot(titleQuery: string): Promise<{ filePa
 
 /**
  * Take a screenshot of a specific window and return as PNG buffer.
- * Returns { buffer, bounds } for sending to the agent.
+ * Returns { buffer, bounds, scale, originalWidth, originalHeight } for sending to the agent.
+ * Images larger than MAX_SCREENSHOT_DIMENSION are automatically resized.
  */
-export async function takeWindowScreenshotBuffer(titleQuery: string): Promise<{ buffer: Buffer; bounds: WindowInfo['bounds']; title: string } | null> {
+export async function takeWindowScreenshotBuffer(titleQuery: string): Promise<{ 
+  buffer: Buffer
+  bounds: WindowInfo['bounds']
+  title: string
+  width: number
+  height: number
+  originalWidth: number
+  originalHeight: number
+  scale: number
+} | null> {
   const nutjs = getNutJs()
   const windowInfo = await getWindowBounds(titleQuery)
   
@@ -705,5 +758,17 @@ export async function takeWindowScreenshotBuffer(titleQuery: string): Promise<{ 
   // Encode BGRA to PNG
   const pngBuffer = encodeRawBgraToPng(image.data, image.width, image.height)
   
-  return { buffer: pngBuffer, bounds: windowInfo.bounds, title: windowInfo.title }
+  // Resize if needed to fit vision model limits (uses Electron's nativeImage)
+  const { buffer, width, height, scale } = resizePngIfNeeded(pngBuffer, image.width, image.height)
+  
+  return { 
+    buffer, 
+    bounds: windowInfo.bounds, 
+    title: windowInfo.title,
+    width,
+    height,
+    originalWidth: image.width,
+    originalHeight: image.height,
+    scale
+  }
 }

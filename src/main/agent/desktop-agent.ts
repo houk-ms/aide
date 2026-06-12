@@ -38,13 +38,12 @@ const DESKTOP_AGENT_PROMPT = `You are a desktop automation specialist. Your job 
 
 2. **Screenshot to verify focus**: After focusing, call desktop_screenshot_window to confirm the correct window is active and see its current state.
 
-3. **Track coordinates carefully**:
-   - The screenshot returns actual dimensions (width/height)
-   - If the image appears smaller in your view, note the displayed size
-   - When clicking, provide imageWidth/imageHeight if scaling is needed
-   - If you crop an image for analysis, track the crop offset (cropOffsetX/cropOffsetY)
-
-4. **Click with desktop_click_in_window**: This is the recommended tool — it handles coordinate math automatically.
+3. **Check screenshot dimensions**: The screenshot result includes:
+   - \`width\`/\`height\`: The image dimensions you see
+   - \`originalWidth\`/\`originalHeight\`: The actual window dimensions
+   - \`scale\`: If less than 1.0, the image was resized to fit model limits
+   
+4. **Click with desktop_click_in_window**: When clicking, ALWAYS pass \`imageWidth\` and \`imageHeight\` from the screenshot result. This ensures coordinates are mapped correctly even if the image was resized.
 
 5. **Re-focus after any delay**: If you take multiple actions or there's any pause, RE-FOCUS the window before continuing. Another window may have stolen focus.
 
@@ -59,11 +58,18 @@ const DESKTOP_AGENT_PROMPT = `You are a desktop automation specialist. Your job 
 
 ## Coordinate Handling
 
-When you see an element to click:
-- Estimate its position relative to the window's top-left corner (0,0)
-- If you cropped the screenshot, add the crop offset when clicking
-- Example: Element appears at (200, 150) in a cropped region that starts at (400, 300) in the full window
-  → Click with x=200, y=150, cropOffsetX=400, cropOffsetY=300
+Screenshots may be resized to fit vision model limits (max 1600px on any dimension).
+
+When clicking:
+1. Identify the element's position in the screenshot image (x, y from top-left)
+2. Pass those coordinates to desktop_click_in_window along with imageWidth and imageHeight
+3. The tool automatically scales coordinates to the actual window size
+
+Example: Screenshot shows a button at (400, 200) in a 1600x900 image
+→ Call: desktop_click_in_window(title="...", x=400, y=200, imageWidth=1600, imageHeight=900)
+→ Tool scales to original window and clicks at the correct position
+
+If you crop an image for analysis, also pass cropOffsetX/cropOffsetY.
 
 ## Error Recovery
 
@@ -116,17 +122,17 @@ const desktopClickTool: Tool<any> = {
 
 const desktopClickInWindowTool: Tool<any> = {
   name: 'desktop_click_in_window',
-  description: 'Click at a position RELATIVE to a window. PREREQUISITE: Call desktop_focus_window FIRST to ensure this window receives the click. Provide the window title and x,y coordinates within that window (where 0,0 is the top-left corner). IMPORTANT: (1) If the screenshot appears smaller than actual dimensions, provide imageWidth/imageHeight. (2) If you CROPPED the screenshot, provide cropOffsetX/cropOffsetY.',
+  description: 'Click at a position RELATIVE to a window. PREREQUISITE: Call desktop_focus_window FIRST. Provide x,y coordinates based on the screenshot image. IMPORTANT: If the screenshot was resized (check the "scale" field in screenshot result), you MUST pass imageWidth and imageHeight from the screenshot result so coordinates are scaled correctly.',
   parameters: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'Window title to click in (partial match, case-insensitive)' },
-      x: { type: 'number', description: 'X coordinate relative to window/image top-left (or relative to crop region if cropOffsetX/Y provided)' },
-      y: { type: 'number', description: 'Y coordinate relative to window/image top-left (or relative to crop region if cropOffsetX/Y provided)' },
-      cropOffsetX: { type: 'number', description: 'If clicking based on a cropped image, the X offset where the crop region starts within the full window screenshot' },
-      cropOffsetY: { type: 'number', description: 'If clicking based on a cropped image, the Y offset where the crop region starts within the full window screenshot' },
-      imageWidth: { type: 'number', description: 'If the screenshot appears scaled, provide the displayed image width here so we can scale coordinates to actual window size' },
-      imageHeight: { type: 'number', description: 'If the screenshot appears scaled, provide the displayed image height here so we can scale coordinates to actual window size' },
+      x: { type: 'number', description: 'X coordinate in the screenshot image (0,0 is top-left)' },
+      y: { type: 'number', description: 'Y coordinate in the screenshot image (0,0 is top-left)' },
+      imageWidth: { type: 'number', description: 'REQUIRED if screenshot was resized: pass the "width" value from the screenshot result' },
+      imageHeight: { type: 'number', description: 'REQUIRED if screenshot was resized: pass the "height" value from the screenshot result' },
+      cropOffsetX: { type: 'number', description: 'If clicking based on a cropped region of the screenshot, the X offset where the crop starts' },
+      cropOffsetY: { type: 'number', description: 'If clicking based on a cropped region of the screenshot, the Y offset where the crop starts' },
       button: { type: 'string', enum: ['left', 'right'], description: 'Mouse button to click (default: left)' },
       doubleClick: { type: 'boolean', description: 'Whether to double-click (default: false)' }
     },
@@ -443,14 +449,25 @@ const desktopScreenshotWindowTool: Tool<any> = {
       const result = await desktop.takeWindowScreenshotBuffer(args.title)
       if (result) {
         const base64 = result.buffer.toString('base64')
+        const wasResized = result.scale < 1.0
+        
         return {
           success: true,
           imageBase64: base64,
           mimeType: 'image/png',
           title: result.title,
-          width: result.bounds.width,
-          height: result.bounds.height,
-          nextStep: `Image size: ${result.bounds.width}x${result.bounds.height}. Use desktop_click_in_window with the same title to click. If the image appears smaller in your view, pass imageWidth/imageHeight when clicking.`
+          // Dimensions of the image you're seeing
+          width: result.width,
+          height: result.height,
+          // Original window dimensions (for coordinate mapping)
+          originalWidth: result.originalWidth,
+          originalHeight: result.originalHeight,
+          // Scale factor applied (1.0 = no resize)
+          scale: result.scale,
+          // Clear instructions for the agent
+          coordinateHelp: wasResized
+            ? `Image was resized from ${result.originalWidth}x${result.originalHeight} to ${result.width}x${result.height} (scale: ${result.scale.toFixed(2)}). When clicking, your coordinates will be automatically scaled back to original size.`
+            : `Image is at original size: ${result.width}x${result.height}. Coordinates can be used directly.`
         }
       } else {
         return { success: false, error: `No window found matching "${args.title}"` }
@@ -471,9 +488,9 @@ const desktopTools: Tool<any>[] = [
   desktopListWindowsTool,
   desktopGetActiveWindowTool,
   desktopGetWindowBoundsTool,
-  desktopListDisplaysTool,      // For multi-monitor setups
-  desktopScreenshotTool,        // Monitor screenshot with bounds
-  desktopClickTool,             // Advanced fallback
+  // Note: desktop_screenshot (full monitor) intentionally excluded to avoid
+  // confusion — agent should always target specific windows with focus workflow
+  desktopClickTool,             // Advanced fallback for absolute coordinates
 ]
 
 // ============================================================
