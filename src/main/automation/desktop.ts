@@ -2,10 +2,24 @@ import { createRequire } from 'module'
 import { app, screen as electronScreen, nativeImage } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 
 // Use Node's createRequire to bypass vite's bundler
 // nut.js has native bindings that don't work with vite's commonjs plugin
 const require = createRequire(import.meta.url)
+
+// Grid configuration for coordinate overlay
+const GRID_COLS = 4  // A, B, C, D columns
+const GRID_ROWS = 4  // 1, 2, 3, 4 rows
+const GRID_LINE_COLOR = { r: 255, g: 0, b: 0, a: 180 }  // Semi-transparent red
+
+// Windows 10/11 extended frame (shadow) offset
+// The window bounds from nut.js include the invisible DWM shadow
+// We need to compensate for this when clicking
+const WINDOWS_SHADOW_LEFT = 7
+const WINDOWS_SHADOW_RIGHT = 7
+const WINDOWS_SHADOW_BOTTOM = 7
+const WINDOWS_SHADOW_TOP = 0  // Top is usually 0 (title bar is part of content)
 
 // ============================================================
 // Desktop Automation Module — nut.js-based desktop control
@@ -535,6 +549,141 @@ function resizePngIfNeeded(
 }
 
 /**
+ * Grid region info - divides image into labeled cells (A1, B2, etc.)
+ * Helps vision models precisely identify click targets.
+ */
+export interface GridRegion {
+  cell: string      // e.g., "B2"
+  x: number         // Top-left X of cell in image coords
+  y: number         // Top-left Y of cell in image coords  
+  width: number     // Cell width
+  height: number    // Cell height
+  centerX: number   // Center X of cell
+  centerY: number   // Center Y of cell
+}
+
+/**
+ * Generate grid regions for an image of given dimensions.
+ * Returns array of labeled cells that can be referenced for clicking.
+ */
+export function generateGridRegions(imageWidth: number, imageHeight: number): GridRegion[] {
+  const cellWidth = imageWidth / GRID_COLS
+  const cellHeight = imageHeight / GRID_ROWS
+  const regions: GridRegion[] = []
+  
+  for (let row = 0; row < GRID_ROWS; row++) {
+    for (let col = 0; col < GRID_COLS; col++) {
+      const colLabel = String.fromCharCode(65 + col)  // A, B, C, D
+      const rowLabel = String(row + 1)                 // 1, 2, 3, 4
+      const x = Math.round(col * cellWidth)
+      const y = Math.round(row * cellHeight)
+      const width = Math.round(cellWidth)
+      const height = Math.round(cellHeight)
+      
+      regions.push({
+        cell: `${colLabel}${rowLabel}`,
+        x,
+        y,
+        width,
+        height,
+        centerX: Math.round(x + width / 2),
+        centerY: Math.round(y + height / 2)
+      })
+    }
+  }
+  
+  return regions
+}
+
+/**
+ * Get coordinates for a grid cell (e.g., "B2") within given image dimensions.
+ * Returns center coordinates and cell bounds, or null if invalid cell.
+ */
+export function getGridCellCoords(
+  cell: string,
+  imageWidth: number,
+  imageHeight: number
+): GridRegion | null {
+  const match = cell.toUpperCase().match(/^([A-D])([1-4])$/)
+  if (!match) return null
+  
+  const col = match[1].charCodeAt(0) - 65  // A=0, B=1, etc.
+  const row = parseInt(match[2]) - 1        // 1=0, 2=1, etc.
+  
+  if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) return null
+  
+  const cellWidth = imageWidth / GRID_COLS
+  const cellHeight = imageHeight / GRID_ROWS
+  const x = Math.round(col * cellWidth)
+  const y = Math.round(row * cellHeight)
+  const width = Math.round(cellWidth)
+  const height = Math.round(cellHeight)
+  
+  return {
+    cell: `${match[1]}${match[2]}`,
+    x,
+    y,
+    width,
+    height,
+    centerX: Math.round(x + width / 2),
+    centerY: Math.round(y + height / 2)
+  }
+}
+
+/**
+ * Add coordinate grid overlay to a PNG buffer using Jimp.
+ * Draws grid lines and cell labels (A1, B2, etc.) to help with coordinate identification.
+ */
+async function addCoordinateGrid(pngBuffer: Buffer): Promise<Buffer> {
+  try {
+    // Use modern Jimp API
+    const { Jimp } = require('jimp')
+    const image = await Jimp.read(pngBuffer)
+    const width = image.width
+    const height = image.height
+    const cellWidth = width / GRID_COLS
+    const cellHeight = height / GRID_ROWS
+    
+    // Draw vertical grid lines
+    for (let col = 1; col < GRID_COLS; col++) {
+      const x = Math.round(col * cellWidth)
+      for (let y = 0; y < height; y++) {
+        // Draw a 2-pixel wide line for visibility
+        for (let dx = -1; dx <= 0; dx++) {
+          const px = x + dx
+          if (px >= 0 && px < width) {
+            const color = (GRID_LINE_COLOR.r << 24) | (GRID_LINE_COLOR.g << 16) | (GRID_LINE_COLOR.b << 8) | GRID_LINE_COLOR.a
+            image.setPixelColor(color, px, y)
+          }
+        }
+      }
+    }
+    
+    // Draw horizontal grid lines
+    for (let row = 1; row < GRID_ROWS; row++) {
+      const y = Math.round(row * cellHeight)
+      for (let x = 0; x < width; x++) {
+        for (let dy = -1; dy <= 0; dy++) {
+          const py = y + dy
+          if (py >= 0 && py < height) {
+            const color = (GRID_LINE_COLOR.r << 24) | (GRID_LINE_COLOR.g << 16) | (GRID_LINE_COLOR.b << 8) | GRID_LINE_COLOR.a
+            image.setPixelColor(color, x, py)
+          }
+        }
+      }
+    }
+    
+    // Note: Jimp text rendering requires fonts, which is complex.
+    // Instead, we return grid info separately for the agent to reference.
+    
+    return await image.getBuffer('image/png')
+  } catch (err) {
+    console.warn('[Desktop] Failed to add coordinate grid:', err)
+    return pngBuffer  // Return original on failure
+  }
+}
+
+/**
  * Get screen dimensions
  */
 export async function getScreenSize(): Promise<{ width: number; height: number }> {
@@ -567,6 +716,10 @@ export function wait(ms: number): Promise<void> {
 export interface WindowInfo {
   title: string
   bounds: { left: number; top: number; width: number; height: number }
+  // On Windows, content bounds exclude the DWM shadow
+  contentBounds?: { left: number; top: number; width: number; height: number }
+  // Offset from outer bounds to content area (for coordinate adjustment)
+  shadowOffset?: { left: number; top: number }
 }
 
 /**
@@ -651,6 +804,7 @@ export async function focusWindow(titleQuery: string): Promise<boolean> {
 
 /**
  * Get bounds of a window by title (partial match, case-insensitive)
+ * On Windows, returns both outer bounds (with shadow) and content bounds (without shadow)
  */
 export async function getWindowBounds(titleQuery: string): Promise<WindowInfo | null> {
   const nutjs = getNutJs()
@@ -662,6 +816,14 @@ export async function getWindowBounds(titleQuery: string): Promise<WindowInfo | 
       const title = await handle.title
       if (title && title.toLowerCase().includes(query)) {
         const region = await handle.region
+        
+        // On Windows, adjust for the invisible DWM extended frame (shadow)
+        const isWindows = os.platform() === 'win32'
+        const shadowLeft = isWindows ? WINDOWS_SHADOW_LEFT : 0
+        const shadowTop = isWindows ? WINDOWS_SHADOW_TOP : 0
+        const shadowRight = isWindows ? WINDOWS_SHADOW_RIGHT : 0
+        const shadowBottom = isWindows ? WINDOWS_SHADOW_BOTTOM : 0
+        
         return {
           title,
           bounds: {
@@ -669,7 +831,15 @@ export async function getWindowBounds(titleQuery: string): Promise<WindowInfo | 
             top: region.top,
             width: region.width,
             height: region.height
-          }
+          },
+          // Content bounds exclude the shadow (for accurate clicking)
+          contentBounds: isWindows ? {
+            left: region.left + shadowLeft,
+            top: region.top + shadowTop,
+            width: region.width - shadowLeft - shadowRight,
+            height: region.height - shadowTop - shadowBottom
+          } : undefined,
+          shadowOffset: isWindows ? { left: shadowLeft, top: shadowTop } : undefined
         }
       }
     } catch {
@@ -723,18 +893,30 @@ export async function takeWindowScreenshot(titleQuery: string): Promise<{ filePa
 
 /**
  * Take a screenshot of a specific window and return as PNG buffer.
- * Returns { buffer, bounds, scale, originalWidth, originalHeight } for sending to the agent.
+ * Returns { buffer, bounds, scale, originalWidth, originalHeight, gridRegions } for sending to the agent.
  * Images larger than MAX_SCREENSHOT_DIMENSION are automatically resized.
+ * 
+ * On Windows, the screenshot EXCLUDES the invisible DWM shadow/border, so coordinates
+ * in the image map directly to clickable content.
+ * 
+ * @param titleQuery - Window title to search for (partial match)
+ * @param options.withGrid - If true, overlay a coordinate grid on the screenshot
  */
-export async function takeWindowScreenshotBuffer(titleQuery: string): Promise<{ 
+export async function takeWindowScreenshotBuffer(
+  titleQuery: string,
+  options?: { withGrid?: boolean }
+): Promise<{ 
   buffer: Buffer
   bounds: WindowInfo['bounds']
+  contentBounds?: WindowInfo['contentBounds']
+  shadowOffset?: WindowInfo['shadowOffset']
   title: string
   width: number
   height: number
   originalWidth: number
   originalHeight: number
   scale: number
+  gridRegions?: GridRegion[]
 } | null> {
   const nutjs = getNutJs()
   const windowInfo = await getWindowBounds(titleQuery)
@@ -747,28 +929,42 @@ export async function takeWindowScreenshotBuffer(titleQuery: string): Promise<{
   await focusWindow(titleQuery)
   await wait(200) // Wait for window to be fully visible
   
-  // Grab just the window region
+  // On Windows, capture only the content area (excluding shadow)
+  // This ensures coordinates in the screenshot map directly to clickable content
+  const captureRegion = windowInfo.contentBounds || windowInfo.bounds
+  
+  // Grab the window region (content only on Windows, full bounds on other platforms)
   const image = await nutjs.screen.grabRegion({
-    left: windowInfo.bounds.left,
-    top: windowInfo.bounds.top,
-    width: windowInfo.bounds.width,
-    height: windowInfo.bounds.height
+    left: captureRegion.left,
+    top: captureRegion.top,
+    width: captureRegion.width,
+    height: captureRegion.height
   })
   
   // Encode BGRA to PNG
   const pngBuffer = encodeRawBgraToPng(image.data, image.width, image.height)
   
   // Resize if needed to fit vision model limits (uses Electron's nativeImage)
-  const { buffer, width, height, scale } = resizePngIfNeeded(pngBuffer, image.width, image.height)
+  let { buffer, width, height, scale } = resizePngIfNeeded(pngBuffer, image.width, image.height)
+  
+  // Add coordinate grid if requested
+  let gridRegions: GridRegion[] | undefined
+  if (options?.withGrid) {
+    buffer = await addCoordinateGrid(buffer)
+    gridRegions = generateGridRegions(width, height)
+  }
   
   return { 
     buffer, 
-    bounds: windowInfo.bounds, 
+    bounds: windowInfo.bounds,
+    contentBounds: windowInfo.contentBounds,
+    shadowOffset: windowInfo.shadowOffset,
     title: windowInfo.title,
     width,
     height,
     originalWidth: image.width,
     originalHeight: image.height,
-    scale
+    scale,
+    gridRegions
   }
 }
