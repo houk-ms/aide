@@ -87,8 +87,8 @@ function download(url, dest, redirects = 0) {
         reject(err)
       })
     })
-    req.on('error', reject)
-    req.setTimeout(120000, () => req.destroy(new Error('timeout')))
+    req.on('error', err => reject(err || new Error('connection error')))
+    req.setTimeout(120000, () => req.destroy(new Error('timeout after 120s')))
   })
 }
 
@@ -124,11 +124,12 @@ for (const f of FILES) {
     await downloadWithRetry(url, dest)
     console.log(`[fetch-model]   -> ${(statSync(dest).size / 1048576).toFixed(2)} MB`)
   } catch (err) {
+    const errMsg = err?.message || String(err) || 'unknown error'
     if (f.required) {
-      console.error(`[fetch-model] FAILED (required) ${f.path}: ${err.message}`)
+      console.error(`[fetch-model] FAILED (required) ${f.path}: ${errMsg}`)
       failed = true
     } else {
-      console.warn(`[fetch-model] optional ${f.path} skipped: ${err.message}`)
+      console.warn(`[fetch-model] optional ${f.path} skipped: ${errMsg}`)
     }
   }
 }

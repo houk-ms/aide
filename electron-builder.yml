@@ -24,6 +24,7 @@ asarUnpack:
   - "**/node_modules/@github/copilot-darwin-x64/**"
   - "**/node_modules/@github/copilot-linux-x64/**"
   - "**/node_modules/@github/copilot-linux-arm64/**"
+  - "**/node_modules/@nut-tree-fork/**"
   - "**/node_modules/playwright-core/**"
   # transformers.js runs the embedding model through onnxruntime-node, whose
   # native .node/.dll cannot be dlopen'd from inside app.asar — unpack it.

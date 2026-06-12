@@ -11,7 +11,12 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        external: ['bufferutil', 'utf-8-validate']
+        // Native modules that must not be bundled:
+        // - nut-js: desktop automation native bindings
+        external: [
+          '@nut-tree-fork/nut-js',
+          '@nut-tree-fork/libnut'
+        ]
       }
     }
   },

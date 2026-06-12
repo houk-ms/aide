@@ -72,6 +72,151 @@ jobs:
           name: aide-embedding-model
           path: models/Xenova/all-MiniLM-L6-v2
 
+      # npm ci sometimes fails to install optional native bindings on Linux
+      # due to an npm bug. Use npm pack + extract to bypass npm's logic entirely.
+      - name: Ensure native bindings (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd node_modules
+          
+          # @tailwindcss/oxide - required by @tailwindcss/postcss
+          ver=$(node -p "require('./@tailwindcss/oxide/package.json').version")
+          echo "@tailwindcss/oxide version: $ver"
+          npm pack "@tailwindcss/oxide-linux-x64-gnu@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-linux-x64-gnu
+          tar -xzf tailwindcss-oxide-linux-x64-gnu-*.tgz
+          mv package/* @tailwindcss/oxide-linux-x64-gnu/
+          rm -rf package tailwindcss-oxide-linux-x64-gnu-*.tgz
+          
+          # lightningcss - required by tailwindcss/postcss
+          ver=$(node -p "require('./lightningcss/package.json').version")
+          echo "lightningcss version: $ver"
+          npm pack "lightningcss-linux-x64-gnu@${ver}" --quiet
+          mkdir -p lightningcss-linux-x64-gnu
+          tar -xzf lightningcss-linux-x64-gnu-*.tgz
+          mv package/* lightningcss-linux-x64-gnu/
+          rm -rf package lightningcss-linux-x64-gnu-*.tgz
+          
+          # rollup - required by vite
+          ver=$(node -p "require('./rollup/package.json').optionalDependencies['@rollup/rollup-linux-x64-gnu']")
+          echo "rollup version: $ver"
+          npm pack "@rollup/rollup-linux-x64-gnu@${ver}" --quiet
+          mkdir -p @rollup/rollup-linux-x64-gnu
+          tar -xzf rollup-rollup-linux-x64-gnu-*.tgz
+          mv package/* @rollup/rollup-linux-x64-gnu/
+          rm -rf package rollup-rollup-linux-x64-gnu-*.tgz
+          
+          # sharp - runtime image processing
+          ver=$(node -p "require('./sharp/package.json').optionalDependencies['@img/sharp-linux-x64']")
+          echo "sharp version: $ver"
+          npm pack "@img/sharp-linux-x64@${ver}" --quiet
+          mkdir -p @img/sharp-linux-x64
+          tar -xzf img-sharp-linux-x64-*.tgz
+          mv package/* @img/sharp-linux-x64/
+          rm -rf package img-sharp-linux-x64-*.tgz
+          
+          # esbuild - required by vite (native packages share main package version)
+          ver=$(node -p "require('./esbuild/package.json').version")
+          echo "esbuild version: $ver"
+          npm pack "@esbuild/linux-x64@${ver}" --quiet
+          mkdir -p @esbuild/linux-x64
+          tar -xzf esbuild-linux-x64-*.tgz
+          mv package/* @esbuild/linux-x64/
+          rm -rf package esbuild-linux-x64-*.tgz
+          
+          echo "Installed:"
+          ls -la @tailwindcss/oxide-linux-x64-gnu/*.node 2>/dev/null || echo "  oxide: MISSING"
+          ls -la lightningcss-linux-x64-gnu/*.node 2>/dev/null || echo "  lightningcss: MISSING"
+          ls -la @rollup/rollup-linux-x64-gnu/*.node 2>/dev/null || echo "  rollup: MISSING"
+          ls -la @img/sharp-linux-x64/*.node 2>/dev/null || echo "  sharp: MISSING"
+          ls -la @esbuild/linux-x64/*.node 2>/dev/null || echo "  esbuild: MISSING"
+
+      # macOS runners sometimes miss native bindings too. Install build-time deps.
+      # Install BOTH arm64 and x64 to handle runner architecture variations.
+      - name: Ensure native bindings (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd node_modules
+          
+          # @tailwindcss/oxide - install both architectures
+          ver=$(node -p "require('./@tailwindcss/oxide/package.json').version")
+          echo "@tailwindcss/oxide version: $ver"
+          
+          npm pack "@tailwindcss/oxide-darwin-arm64@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-darwin-arm64
+          tar -xzf tailwindcss-oxide-darwin-arm64-*.tgz
+          mv package/* @tailwindcss/oxide-darwin-arm64/
+          rm -rf package tailwindcss-oxide-darwin-arm64-*.tgz
+          
+          npm pack "@tailwindcss/oxide-darwin-x64@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-darwin-x64
+          tar -xzf tailwindcss-oxide-darwin-x64-*.tgz
+          mv package/* @tailwindcss/oxide-darwin-x64/
+          rm -rf package tailwindcss-oxide-darwin-x64-*.tgz
+          
+          # lightningcss - install both architectures
+          ver=$(node -p "require('./lightningcss/package.json').version")
+          echo "lightningcss version: $ver"
+          
+          npm pack "lightningcss-darwin-arm64@${ver}" --quiet
+          mkdir -p lightningcss-darwin-arm64
+          tar -xzf lightningcss-darwin-arm64-*.tgz
+          mv package/* lightningcss-darwin-arm64/
+          rm -rf package lightningcss-darwin-arm64-*.tgz
+          
+          npm pack "lightningcss-darwin-x64@${ver}" --quiet
+          mkdir -p lightningcss-darwin-x64
+          tar -xzf lightningcss-darwin-x64-*.tgz
+          mv package/* lightningcss-darwin-x64/
+          rm -rf package lightningcss-darwin-x64-*.tgz
+          
+          # rollup - install both architectures
+          ver=$(node -p "require('./rollup/package.json').optionalDependencies['@rollup/rollup-darwin-arm64']")
+          echo "rollup version: $ver"
+          
+          npm pack "@rollup/rollup-darwin-arm64@${ver}" --quiet
+          mkdir -p @rollup/rollup-darwin-arm64
+          tar -xzf rollup-rollup-darwin-arm64-*.tgz
+          mv package/* @rollup/rollup-darwin-arm64/
+          rm -rf package rollup-rollup-darwin-arm64-*.tgz
+          
+          ver=$(node -p "require('./rollup/package.json').optionalDependencies['@rollup/rollup-darwin-x64']")
+          npm pack "@rollup/rollup-darwin-x64@${ver}" --quiet
+          mkdir -p @rollup/rollup-darwin-x64
+          tar -xzf rollup-rollup-darwin-x64-*.tgz
+          mv package/* @rollup/rollup-darwin-x64/
+          rm -rf package rollup-rollup-darwin-x64-*.tgz
+          
+          # esbuild - install both architectures (required by vite)
+          ver=$(node -p "require('./esbuild/package.json').version")
+          echo "esbuild version: $ver"
+          
+          npm pack "@esbuild/darwin-arm64@${ver}" --quiet
+          mkdir -p @esbuild/darwin-arm64
+          tar -xzf esbuild-darwin-arm64-*.tgz
+          mv package/* @esbuild/darwin-arm64/
+          rm -rf package esbuild-darwin-arm64-*.tgz
+          
+          npm pack "@esbuild/darwin-x64@${ver}" --quiet
+          mkdir -p @esbuild/darwin-x64
+          tar -xzf esbuild-darwin-x64-*.tgz
+          mv package/* @esbuild/darwin-x64/
+          rm -rf package esbuild-darwin-x64-*.tgz
+          
+          echo "Installed:"
+          ls -la @tailwindcss/oxide-darwin-arm64/*.node 2>/dev/null || echo "  oxide-arm64: MISSING"
+          ls -la @tailwindcss/oxide-darwin-x64/*.node 2>/dev/null || echo "  oxide-x64: MISSING"
+          ls -la lightningcss-darwin-arm64/*.node 2>/dev/null || echo "  lightningcss-arm64: MISSING"
+          ls -la lightningcss-darwin-x64/*.node 2>/dev/null || echo "  lightningcss-x64: MISSING"
+          ls -la @rollup/rollup-darwin-arm64/*.node 2>/dev/null || echo "  rollup-arm64: MISSING"
+          ls -la @rollup/rollup-darwin-x64/*.node 2>/dev/null || echo "  rollup-x64: MISSING"
+          ls -la @esbuild/darwin-arm64/*.node 2>/dev/null || echo "  esbuild-arm64: MISSING"
+          ls -la @esbuild/darwin-x64/*.node 2>/dev/null || echo "  esbuild-x64: MISSING"
+
       - name: Download Playwright browser
         run: npx playwright install chromium
         env:
@@ -87,26 +232,63 @@ jobs:
           set -euo pipefail
           ver=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@github/copilot/package.json','utf8')).optionalDependencies['@github/copilot-darwin-x64']")
           echo "Copilot CLI version: $ver"
-          case "${{ matrix.platform }}" in
-            mac)
-              npm install --no-save --force --ignore-scripts --os=darwin --cpu=x64   "@github/copilot-darwin-x64@${ver}"
-              npm install --no-save --force --ignore-scripts --os=darwin --cpu=arm64 "@github/copilot-darwin-arm64@${ver}"
-              test -f "node_modules/@github/copilot-darwin-x64/copilot"
-              test -f "node_modules/@github/copilot-darwin-arm64/copilot"
-              ;;
-            win)
-              npm install --no-save --force --ignore-scripts --os=win32 --cpu=x64 "@github/copilot-win32-x64@${ver}"
-              test -f "node_modules/@github/copilot-win32-x64/copilot.exe"
-              ;;
-            linux)
-              npm install --no-save --force --ignore-scripts --os=linux --cpu=x64 "@github/copilot-linux-x64@${ver}"
-              test -f "node_modules/@github/copilot-linux-x64/copilot"
-              ;;
-          esac
+          
+          # npm's --os/--cpu flags don't reliably install cross-platform optional deps.
+          # Download and extract both packages manually via npm pack.
+          cd node_modules/@github
+          
+          # Install x64 (not installed by npm ci on arm64 runner)
+          npm pack "@github/copilot-darwin-x64@${ver}" --quiet
+          mkdir -p copilot-darwin-x64
+          tar -xzf github-copilot-darwin-x64-*.tgz
+          mv package/* copilot-darwin-x64/
+          rm -rf package github-copilot-darwin-x64-*.tgz
+          
+          # Reinstall arm64 (may have been removed by npm operations)
+          npm pack "@github/copilot-darwin-arm64@${ver}" --quiet
+          mkdir -p copilot-darwin-arm64
+          tar -xzf github-copilot-darwin-arm64-*.tgz
+          mv package/* copilot-darwin-arm64/
+          rm -rf package github-copilot-darwin-arm64-*.tgz
+          
+          cd ../..
+          
+          # Verify packages installed
+          echo "x64 package contents:" && ls -la node_modules/@github/copilot-darwin-x64/
+          echo "arm64 package contents:" && ls -la node_modules/@github/copilot-darwin-arm64/
+          test -f "node_modules/@github/copilot-darwin-x64/copilot"
+          test -f "node_modules/@github/copilot-darwin-arm64/copilot"
 
-      - name: Remove optional websocket native accelerators
+      # Sharp is a runtime dependency bundled into the app. The arm64 runner
+      # only installs arm64 binaries, but we need x64 for the x64 build.
+      - name: Ensure Sharp binaries for all target archs
+        if: matrix.platform == 'mac'
         shell: bash
-        run: rm -rf node_modules/bufferutil node_modules/utf-8-validate
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('./node_modules/sharp/package.json').optionalDependencies['@img/sharp-darwin-x64']")
+          echo "Sharp version: $ver"
+          
+          cd node_modules/@img
+          
+          # Install x64 sharp binary (not installed by npm ci on arm64 runner)
+          npm pack "@img/sharp-darwin-x64@${ver}" --quiet
+          mkdir -p sharp-darwin-x64
+          tar -xzf img-sharp-darwin-x64-*.tgz
+          mv package/* sharp-darwin-x64/
+          rm -rf package img-sharp-darwin-x64-*.tgz
+          
+          # Install x64 libvips (required by sharp)
+          libvips_ver=$(node -p "require('../sharp/package.json').optionalDependencies['@img/sharp-libvips-darwin-x64']")
+          echo "Libvips version: $libvips_ver"
+          npm pack "@img/sharp-libvips-darwin-x64@${libvips_ver}" --quiet
+          mkdir -p sharp-libvips-darwin-x64
+          tar -xzf img-sharp-libvips-darwin-x64-*.tgz
+          mv package/* sharp-libvips-darwin-x64/
+          rm -rf package img-sharp-libvips-darwin-x64-*.tgz
+          
+          cd ../..
+          echo "Sharp x64 installed:" && ls node_modules/@img/ | grep darwin
 
       - name: Build & package (${{ matrix.platform }})
         # Publish only on a version tag. A manual workflow_dispatch run still

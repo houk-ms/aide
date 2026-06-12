@@ -26,6 +26,66 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # npm ci sometimes fails to install optional native bindings on Linux
+      # due to an npm bug. Use npm pack + extract to bypass npm's logic entirely.
+      - name: Ensure native bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd node_modules
+          
+          # @tailwindcss/oxide - required by @tailwindcss/postcss
+          ver=$(node -p "require('./@tailwindcss/oxide/package.json').version")
+          echo "@tailwindcss/oxide version: $ver"
+          npm pack "@tailwindcss/oxide-linux-x64-gnu@${ver}" --quiet
+          mkdir -p @tailwindcss/oxide-linux-x64-gnu
+          tar -xzf tailwindcss-oxide-linux-x64-gnu-*.tgz
+          mv package/* @tailwindcss/oxide-linux-x64-gnu/
+          rm -rf package tailwindcss-oxide-linux-x64-gnu-*.tgz
+          
+          # lightningcss - required by tailwindcss/postcss
+          ver=$(node -p "require('./lightningcss/package.json').version")
+          echo "lightningcss version: $ver"
+          npm pack "lightningcss-linux-x64-gnu@${ver}" --quiet
+          mkdir -p lightningcss-linux-x64-gnu
+          tar -xzf lightningcss-linux-x64-gnu-*.tgz
+          mv package/* lightningcss-linux-x64-gnu/
+          rm -rf package lightningcss-linux-x64-gnu-*.tgz
+          
+          # rollup - required by vite
+          ver=$(node -p "require('./rollup/package.json').optionalDependencies['@rollup/rollup-linux-x64-gnu']")
+          echo "rollup version: $ver"
+          npm pack "@rollup/rollup-linux-x64-gnu@${ver}" --quiet
+          mkdir -p @rollup/rollup-linux-x64-gnu
+          tar -xzf rollup-rollup-linux-x64-gnu-*.tgz
+          mv package/* @rollup/rollup-linux-x64-gnu/
+          rm -rf package rollup-rollup-linux-x64-gnu-*.tgz
+          
+          # sharp - runtime image processing
+          ver=$(node -p "require('./sharp/package.json').optionalDependencies['@img/sharp-linux-x64']")
+          echo "sharp version: $ver"
+          npm pack "@img/sharp-linux-x64@${ver}" --quiet
+          mkdir -p @img/sharp-linux-x64
+          tar -xzf img-sharp-linux-x64-*.tgz
+          mv package/* @img/sharp-linux-x64/
+          rm -rf package img-sharp-linux-x64-*.tgz
+          
+          # esbuild - required by vite (native packages share main package version)
+          ver=$(node -p "require('./esbuild/package.json').version")
+          echo "esbuild version: $ver"
+          npm pack "@esbuild/linux-x64@${ver}" --quiet
+          mkdir -p @esbuild/linux-x64
+          tar -xzf esbuild-linux-x64-*.tgz
+          mv package/* @esbuild/linux-x64/
+          rm -rf package esbuild-linux-x64-*.tgz
+          
+          echo "Installed:"
+          ls @tailwindcss/oxide-linux-x64-gnu/*.node 2>/dev/null || echo "  oxide: MISSING"
+          ls lightningcss-linux-x64-gnu/*.node 2>/dev/null || echo "  lightningcss: MISSING"
+          ls @rollup/rollup-linux-x64-gnu/*.node 2>/dev/null || echo "  rollup: MISSING"
+          ls @img/sharp-linux-x64/*.node 2>/dev/null || echo "  sharp: MISSING"
+          ls @esbuild/linux-x64/*.node 2>/dev/null || echo "  esbuild: MISSING"
+
       - name: Type check
         run: npm run typecheck
 

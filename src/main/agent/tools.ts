@@ -11,6 +11,7 @@ import { listSkills, installSkillFromLocalPath } from '../skills'
 import { browseSkills, installFromMarketplace } from '../skills/sources'
 import { BrowserWindow } from 'electron'
 import type { Tool } from '@github/copilot-sdk'
+import { desktopAutomationTool } from './desktop-agent'
 
 // ============================================================
 // Custom Tools — registered to the SDK for the agent to call autonomously
@@ -40,6 +41,8 @@ export function buildTools(): Tool<any>[] {
     browserTypeTool,
     browserReadTool,
     browserScreenshotTool,
+    // Desktop automation (single meta-tool that delegates to a specialized sub-agent)
+    desktopAutomationTool,
     // Skill marketplace tools
     searchSkillsTool,
     installSkillTool,

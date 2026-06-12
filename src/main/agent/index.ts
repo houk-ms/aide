@@ -13,6 +13,7 @@ import { BrowserWindow } from 'electron'
 import type { CopilotClient, CopilotSession, ModelInfo as SdkModelInfo } from '@github/copilot-sdk'
 import type { SessionConfig, PermissionRequest, PermissionRequestResult } from '@github/copilot-sdk'
 import { buildTools } from './tools'
+import { abortDesktopSubagent } from './desktop-agent'
 import { sdkError } from '../health'
 
 // Build the user-facing error when the SDK never came up. Prefer the real
@@ -50,7 +51,15 @@ export function initAgent(sdkClient: CopilotClient): void {
   client = sdkClient
 }
 
+/** Get the SDK client instance (for sub-agents) */
+export function getClient(): CopilotClient | null {
+  return client
+}
+
 export function stopStream(): void {
+  // Abort desktop sub-agent if running
+  abortDesktopSubagent()
+  
   if (activeSession) {
     activeSession.abort()
     activeSession = null
