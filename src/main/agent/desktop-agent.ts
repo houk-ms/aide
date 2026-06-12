@@ -608,6 +608,7 @@ export async function runDesktopSubagent(
   }
 
   const sessionId = `desktop-${Date.now()}`
+  console.log(`[Desktop] Starting subagent | session: ${sessionId} | task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''} | window: ${windowTitle || 'none'}`)
   const prompt = windowTitle
     ? `Task: ${task}\nTarget window: "${windowTitle}"\n\nStart by taking a screenshot of the target window to see its current state.`
     : `Task: ${task}\n\nStart by listing windows or taking a screenshot to see what's available.`
@@ -625,6 +626,9 @@ export async function runDesktopSubagent(
       
       toolTimestamps.set(toolCallId, Date.now())
       toolSteps.push(inputPreview)
+      
+      // Log to console for debugging
+      console.log(`[Desktop] tool_pre: ${toolName} | args: ${JSON.stringify(input.toolArgs || {}).slice(0, 300)}`)
       
       // Emit event so UI shows the sub-agent's tool call
       emitDesktopEvent({
@@ -655,12 +659,15 @@ export async function runDesktopSubagent(
       if (result.success === false) {
         resultPreview = `Error: ${result.error || 'unknown'}`
       } else if (result.imageBase64) {
-        resultPreview = `Screenshot captured (${result.width}x${result.height})`
+        resultPreview = `Screenshot captured (${result.width}x${result.height}, original: ${result.originalWidth}x${result.originalHeight}, scale: ${result.scale})`
       } else if (result.message) {
         resultPreview = result.message
       } else {
         resultPreview = JSON.stringify(result).slice(0, 100)
       }
+      
+      // Log to console for debugging
+      console.log(`[Desktop] tool_post: ${toolName} | ${durationMs}ms | ${resultPreview}`)
       
       emitDesktopEvent({
         type: 'chat:tool-use',
@@ -733,6 +740,15 @@ export async function runDesktopSubagent(
             session.disconnect().catch(() => {})
             client.deleteSession(sessionId).catch(() => {})
             
+            const result = {
+              success: !aborted,
+              summary: aborted ? '' : (finalMessage || streamed || 'Task completed'),
+              error: aborted ? 'Cancelled by user' : undefined,
+              steps: toolSteps.length > 0 ? toolSteps : undefined
+            }
+            
+            console.log(`[Desktop] Subagent finished | session: ${sessionId} | success: ${result.success} | steps: ${toolSteps.length}`)
+            
             // Signal completion
             emitDesktopEvent({
               type: 'desktop:subagent-end',
@@ -740,12 +756,7 @@ export async function runDesktopSubagent(
               success: !aborted
             })
             
-            resolve({
-              success: !aborted,
-              summary: aborted ? '' : (finalMessage || streamed || 'Task completed'),
-              error: aborted ? 'Cancelled by user' : undefined,
-              steps: toolSteps.length > 0 ? toolSteps : undefined
-            })
+            resolve(result)
             break
           }
           case 'session.error': {
@@ -754,18 +765,21 @@ export async function runDesktopSubagent(
             session.disconnect().catch(() => {})
             client.deleteSession(sessionId).catch(() => {})
             
+            const errorMsg = event.data?.message || 'Desktop agent error'
+            console.error(`[Desktop] Subagent error | session: ${sessionId} | error: ${errorMsg}`)
+            
             // Signal error
             emitDesktopEvent({
               type: 'desktop:subagent-end',
               taskId: null,
               success: false,
-              error: event.data?.message || 'Desktop agent error'
+              error: errorMsg
             })
             
             resolve({
               success: false,
               summary: '',
-              error: event.data?.message || 'Desktop agent error',
+              error: errorMsg,
               steps: toolSteps.length > 0 ? toolSteps : undefined
             })
             break
