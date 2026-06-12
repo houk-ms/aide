@@ -117,11 +117,21 @@ jobs:
           mv package/* @img/sharp-linux-x64/
           rm -rf package img-sharp-linux-x64-*.tgz
           
+          # esbuild - required by vite (native packages share main package version)
+          ver=$(node -p "require('./esbuild/package.json').version")
+          echo "esbuild version: $ver"
+          npm pack "@esbuild/linux-x64@${ver}" --quiet
+          mkdir -p @esbuild/linux-x64
+          tar -xzf esbuild-linux-x64-*.tgz
+          mv package/* @esbuild/linux-x64/
+          rm -rf package esbuild-linux-x64-*.tgz
+          
           echo "Installed:"
           ls -la @tailwindcss/oxide-linux-x64-gnu/*.node 2>/dev/null || echo "  oxide: MISSING"
           ls -la lightningcss-linux-x64-gnu/*.node 2>/dev/null || echo "  lightningcss: MISSING"
           ls -la @rollup/rollup-linux-x64-gnu/*.node 2>/dev/null || echo "  rollup: MISSING"
           ls -la @img/sharp-linux-x64/*.node 2>/dev/null || echo "  sharp: MISSING"
+          ls -la @esbuild/linux-x64/*.node 2>/dev/null || echo "  esbuild: MISSING"
 
       # macOS runners sometimes miss native bindings too. Install build-time deps.
       # Install BOTH arm64 and x64 to handle runner architecture variations.
@@ -181,6 +191,22 @@ jobs:
           mv package/* @rollup/rollup-darwin-x64/
           rm -rf package rollup-rollup-darwin-x64-*.tgz
           
+          # esbuild - install both architectures (required by vite)
+          ver=$(node -p "require('./esbuild/package.json').version")
+          echo "esbuild version: $ver"
+          
+          npm pack "@esbuild/darwin-arm64@${ver}" --quiet
+          mkdir -p @esbuild/darwin-arm64
+          tar -xzf esbuild-darwin-arm64-*.tgz
+          mv package/* @esbuild/darwin-arm64/
+          rm -rf package esbuild-darwin-arm64-*.tgz
+          
+          npm pack "@esbuild/darwin-x64@${ver}" --quiet
+          mkdir -p @esbuild/darwin-x64
+          tar -xzf esbuild-darwin-x64-*.tgz
+          mv package/* @esbuild/darwin-x64/
+          rm -rf package esbuild-darwin-x64-*.tgz
+          
           echo "Installed:"
           ls -la @tailwindcss/oxide-darwin-arm64/*.node 2>/dev/null || echo "  oxide-arm64: MISSING"
           ls -la @tailwindcss/oxide-darwin-x64/*.node 2>/dev/null || echo "  oxide-x64: MISSING"
@@ -188,6 +214,8 @@ jobs:
           ls -la lightningcss-darwin-x64/*.node 2>/dev/null || echo "  lightningcss-x64: MISSING"
           ls -la @rollup/rollup-darwin-arm64/*.node 2>/dev/null || echo "  rollup-arm64: MISSING"
           ls -la @rollup/rollup-darwin-x64/*.node 2>/dev/null || echo "  rollup-x64: MISSING"
+          ls -la @esbuild/darwin-arm64/*.node 2>/dev/null || echo "  esbuild-arm64: MISSING"
+          ls -la @esbuild/darwin-x64/*.node 2>/dev/null || echo "  esbuild-x64: MISSING"
 
       - name: Download Playwright browser
         run: npx playwright install chromium

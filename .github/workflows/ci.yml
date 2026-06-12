@@ -61,10 +61,20 @@ jobs:
           mv package/* @img/sharp-linux-x64/
           rm -rf package img-sharp-linux-x64-*.tgz
           
+          # esbuild - required by vite (native packages share main package version)
+          ver=$(node -p "require('./esbuild/package.json').version")
+          echo "esbuild version: $ver"
+          npm pack "@esbuild/linux-x64@${ver}" --quiet
+          mkdir -p @esbuild/linux-x64
+          tar -xzf esbuild-linux-x64-*.tgz
+          mv package/* @esbuild/linux-x64/
+          rm -rf package esbuild-linux-x64-*.tgz
+          
           echo "Installed:"
           ls lightningcss-linux-x64-gnu/*.node 2>/dev/null || echo "  lightningcss: MISSING"
           ls @rollup/rollup-linux-x64-gnu/*.node 2>/dev/null || echo "  rollup: MISSING"
           ls @img/sharp-linux-x64/*.node 2>/dev/null || echo "  sharp: MISSING"
+          ls @esbuild/linux-x64/*.node 2>/dev/null || echo "  esbuild: MISSING"
 
       - name: Type check
         run: npm run typecheck
