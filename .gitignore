@@ -4,6 +4,8 @@ out/
 release/
 tmp/
 models/
+runtimes/
+browsers/
 *.db
 *.sqlite
 .env

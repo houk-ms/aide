@@ -1,7 +1,36 @@
-import { BrowserWindow, shell } from 'electron'
+import { BrowserWindow, shell, app } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
+import { existsSync } from 'fs'
+import { join } from 'path'
 import { startMcpServer } from '../agent/mcp'
 import type { ConnectionStatus } from '@shared/types'
+
+// === Bundled Runtime Resolution ===
+
+/**
+ * Get the npx command, preferring the bundled Node.js runtime if available.
+ * In packaged builds, we ship a portable Node.js in extraResources/runtimes/node.
+ * Falls back to system npx if bundled version not found.
+ */
+function getNpxCommand(): string {
+  if (app.isPackaged) {
+    const bundledNpx = process.platform === 'win32'
+      ? join(process.resourcesPath, 'runtimes', 'node', 'npx.cmd')
+      : join(process.resourcesPath, 'runtimes', 'node', 'bin', 'npx')
+    if (existsSync(bundledNpx)) {
+      console.log('[Aide] Using bundled npx:', bundledNpx)
+      return bundledNpx
+    }
+  }
+  return 'npx'
+}
+
+// Cache the resolved npx command
+let _npxCommand: string | null = null
+function npx(): string {
+  if (_npxCommand === null) _npxCommand = getNpxCommand()
+  return _npxCommand
+}
 
 // Connection state
 const connections: Map<string, ConnectionStatus> = new Map([
@@ -30,11 +59,11 @@ export async function checkCliAvailability(): Promise<{ gh: boolean; npx: boolea
       proc.on('error', () => resolve(false))
     })
 
-  const [gh, npx] = await Promise.all([
+  const [gh, npxAvailable] = await Promise.all([
     check('gh', ['--version']),
-    check('npx', ['--version'])
+    check(npx(), ['--version'])
   ])
-  return { gh, npx }
+  return { gh, npx: npxAvailable }
 }
 
 // === Check CLI Auth Status ===
@@ -161,7 +190,7 @@ export async function switchGhAccount(account: string): Promise<void> {
 
 async function acceptWorkiqEula(): Promise<void> {
   return new Promise(resolve => {
-    const proc = spawn('npx', ['-y', '@microsoft/workiq@preview', 'accept-eula'], {
+    const proc = spawn(npx(), ['-y', '@microsoft/workiq@preview', 'accept-eula'], {
       shell: true, stdio: 'ignore'
     })
     proc.on('close', () => resolve())
@@ -279,7 +308,7 @@ export function authenticateMicrosoft(): Promise<void> {
       activeAuthProcess = null
     }
 
-    const proc = spawn('npx', ['-y', '@microsoft/workiq@preview', 'auth', 'login'], {
+    const proc = spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'login'], {
       shell: true,
       stdio: ['pipe', 'pipe', 'pipe']
     })
@@ -385,7 +414,7 @@ export async function disconnect(type: 'workiq' | 'github'): Promise<void> {
     conn.checking = false
     conn.lastError = null
   } else if (type === 'workiq') {
-    spawn('npx', ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { shell: true, stdio: 'ignore' })
+    spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { shell: true, stdio: 'ignore' })
     conn.authenticated = false
     conn.verified = false
     conn.checking = false
@@ -479,7 +508,9 @@ export function getMcpEnv(type: 'workiq' | 'github'): Record<string, string> | n
   return null
 }
 
-export const MCP_CONFIG = {
-  workiq: { command: 'npx', args: ['-y', '@microsoft/workiq@preview', 'mcp'] },
-  github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] }
+export function getMcpConfig() {
+  return {
+    workiq: { command: npx(), args: ['-y', '@microsoft/workiq@preview', 'mcp'] },
+    github: { command: npx(), args: ['-y', '@modelcontextprotocol/server-github'] }
+  }
 }

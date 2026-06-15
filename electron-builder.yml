@@ -44,6 +44,13 @@ extraResources:
     to: "browsers"
     filter:
       - "**/*"
+  # Bundled Node.js runtime for MCP servers (npx). Platform-specific, downloaded
+  # pre-build by scripts/fetch-runtimes.mjs. Allows M365/GitHub connections to
+  # work without requiring users to install Node.js system-wide.
+  - from: "runtimes/node-${os}-${arch}"
+    to: "runtimes/node"
+    filter:
+      - "**/*"
   # Local embedding model for semantic memory search, downloaded pre-build by
   # scripts/fetch-model.mjs. Bundled so the feature works fully offline.
   - from: "models"
@@ -112,6 +119,6 @@ appImage:
 
 publish:
   provider: github
-  owner: houk-ms
+  owner: Tonychen0227
   repo: aide
   releaseType: release
