@@ -124,7 +124,10 @@ const api: AideAPI = {
     openFolder: (taskId) => ipcRenderer.invoke('files:openFolder', taskId)
   },
   system: {
-    health: () => ipcRenderer.invoke('system:health')
+    health: () => ipcRenderer.invoke('system:health'),
+    diagnostics: () => ipcRenderer.invoke('system:diagnostics'),
+    openUserDataFolder: () => ipcRenderer.invoke('system:openUserDataFolder'),
+    openDevTools: () => ipcRenderer.invoke('system:openDevTools')
   }
 }
 

@@ -218,6 +218,20 @@ export interface ConnectionStatus {
   activeAccount: string | null // e.g. GitHub username
 }
 
+export interface ConnectionDiagnostics {
+  platform: string
+  arch: string
+  electronVersion: string
+  appVersion: string
+  isPackaged: boolean
+  resourcesPath: string
+  npxCommand: string
+  bundledNpxExists: boolean
+  bundledNpxPath: string
+  userDataPath: string
+  connections: ConnectionStatus[]
+}
+
 // === WeChat ===
 
 export type WeChatConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -412,6 +426,9 @@ export interface AideAPI {
   }
   system: {
     health(): Promise<{ sdk: 'initializing' | 'ready' | 'error'; sdkError: string | null }>
+    diagnostics(): Promise<ConnectionDiagnostics>
+    openUserDataFolder(): Promise<string>
+    openDevTools(): Promise<void>
   }
 }
 

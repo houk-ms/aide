@@ -178,12 +178,48 @@ See [docs/architecture.md](docs/architecture.md) and [docs/memory.md](docs/memor
 | [docs/skill.md](docs/skill.md) | Skill extensibility model |
 | [docs/job.md](docs/job.md) | Scheduling subsystem |
 | [docs/ui.md](docs/ui.md) | UI design and interaction flows |
+| [Troubleshooting](#troubleshooting) | DevTools, diagnostics panel, common issues |
 
 ---
 
 ## Project status
 
 Aide is in **early access**: the core experience is in place, while the agent-driven collection and execution paths continue to be hardened. See [PRODUCT.md](PRODUCT.md) for the full scope and what's next.
+
+---
+
+## Troubleshooting
+
+### DevTools
+
+Open Chrome DevTools in the installed app to view console logs and debug issues:
+
+- **Keyboard shortcut:** Press `Ctrl+Shift+I` (Windows/Linux) or `Cmd+Shift+I` (Mac)
+- **From UI:** Go to **Settings → Connections**, scroll to the Troubleshooting section, and click **DevTools**
+
+### Diagnostics panel
+
+If a connection fails, the Troubleshooting section in **Settings → Connections** shows:
+
+- Platform, architecture, and app version
+- Whether the bundled Node.js runtime is present
+- The npx command being used
+- Connection status for each source (Microsoft 365, GitHub)
+
+Click **Show Diagnostics** to reveal this panel.
+
+### Log files
+
+Click **Open Logs Folder** in the Troubleshooting section to open the app's user data directory. Console output and error logs are stored there.
+
+### Common issues
+
+| Problem | Possible cause | Solution |
+|---|---|---|
+| "Authentication failed" on M365 | OAuth flow interrupted or permissions denied | Try again; ensure you complete the browser sign-in |
+| "Could not start workiq CLI" | Bundled Node.js runtime missing | Check diagnostics — `bundledNpxExists` should be `✓` |
+| MCP server fails to start | Missing Teams/M365 admin permissions | Ask your tenant admin to grant the required Graph API scopes |
+| GitHub not connecting | `gh` CLI not installed | Install via `winget install GitHub.cli` or [cli.github.com](https://cli.github.com) |
 
 ---
 

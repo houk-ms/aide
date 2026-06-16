@@ -19,7 +19,8 @@ function getNpxCommand(): string {
       : join(process.resourcesPath, 'runtimes', 'node', 'bin', 'npx')
     if (existsSync(bundledNpx)) {
       console.log('[Aide] Using bundled npx:', bundledNpx)
-      return bundledNpx
+      // Quote the path for shell execution if it contains spaces
+      return bundledNpx.includes(' ') ? `"${bundledNpx}"` : bundledNpx
     }
   }
   return 'npx'
@@ -362,8 +363,20 @@ export function authenticateMicrosoft(): Promise<void> {
         broadcastConnectionStatus()
         resolve()
       } else {
+        console.error('[Aide] workiq auth failed (code', code, '):', output)
         const conn = connections.get('workiq')
-        if (conn) { conn.lastError = 'Authentication failed'; conn.authenticated = false; conn.checking = false }
+        // Provide more helpful error message based on output
+        let errorMsg = 'Authentication failed'
+        if (/ENOENT|not found|cannot find/i.test(output)) {
+          errorMsg = 'Could not start workiq CLI — Node.js runtime may be missing'
+        } else if (/network|ETIMEDOUT|ECONNREFUSED/i.test(output)) {
+          errorMsg = 'Authentication failed — network error'
+        } else if (output.trim()) {
+          // Include first line of output as hint
+          const firstLine = output.trim().split('\n')[0].slice(0, 80)
+          errorMsg = `Authentication failed: ${firstLine}`
+        }
+        if (conn) { conn.lastError = errorMsg; conn.authenticated = false; conn.checking = false }
         broadcastConnectionStatus()
         reject(new Error('workiq auth login failed'))
       }
@@ -371,6 +384,14 @@ export function authenticateMicrosoft(): Promise<void> {
 
     proc.on('error', (err) => {
       activeAuthProcess = null
+      console.error('[Aide] workiq spawn error:', err)
+      const conn = connections.get('workiq')
+      if (conn) {
+        conn.lastError = `Could not start workiq CLI: ${err.message}`
+        conn.authenticated = false
+        conn.checking = false
+      }
+      broadcastConnectionStatus()
       reject(new Error(`workiq CLI not available: ${err.message}`))
     })
 
@@ -512,5 +533,41 @@ export function getMcpConfig() {
   return {
     workiq: { command: npx(), args: ['-y', '@microsoft/workiq@preview', 'mcp'] },
     github: { command: npx(), args: ['-y', '@modelcontextprotocol/server-github'] }
+  }
+}
+
+// === Diagnostics ===
+
+export interface ConnectionDiagnostics {
+  platform: string
+  arch: string
+  electronVersion: string
+  appVersion: string
+  isPackaged: boolean
+  resourcesPath: string
+  npxCommand: string
+  bundledNpxExists: boolean
+  bundledNpxPath: string
+  userDataPath: string
+  connections: ConnectionStatus[]
+}
+
+export function getDiagnostics(): ConnectionDiagnostics {
+  const bundledNpx = process.platform === 'win32'
+    ? join(process.resourcesPath, 'runtimes', 'node', 'npx.cmd')
+    : join(process.resourcesPath, 'runtimes', 'node', 'bin', 'npx')
+
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    electronVersion: process.versions.electron,
+    appVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    npxCommand: npx(),
+    bundledNpxExists: existsSync(bundledNpx),
+    bundledNpxPath: bundledNpx,
+    userDataPath: app.getPath('userData'),
+    connections: getConnectionStatus()
   }
 }
