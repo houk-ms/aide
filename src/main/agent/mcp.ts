@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process'
-import { getMcpConfig, getMcpEnv } from '../connections'
+import { getMcpConfig, getMcpEnv, getNodeEnv } from '../connections'
 import { BrowserWindow } from 'electron'
 import type { Tool } from '@github/copilot-sdk'
 
@@ -32,8 +32,10 @@ export async function startMcpServer(type: 'workiq' | 'github'): Promise<Tool[]>
   if (!env) throw new Error(`No credentials for ${type}. Please authenticate first.`)
 
   const config = getMcpConfig()[type]
+  
+  // Use getNodeEnv to ensure npx.cmd can find node.exe on Windows
   const proc = spawn(config.command, config.args, {
-    env: { ...process.env, ...env },
+    env: getNodeEnv(env),
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: true
   })

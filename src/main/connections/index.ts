@@ -33,6 +33,40 @@ function npx(): string {
   return _npxCommand
 }
 
+/**
+ * Get the bundled Node.js directory path.
+ * Returns null if not in a packaged build or bundled runtime doesn't exist.
+ */
+export function getBundledNodeDir(): string | null {
+  if (app.isPackaged) {
+    const nodeDir = join(process.resourcesPath, 'runtimes', 'node')
+    const nodeExe = process.platform === 'win32'
+      ? join(nodeDir, 'node.exe')
+      : join(nodeDir, 'bin', 'node')
+    if (existsSync(nodeExe)) {
+      // Return the directory containing the node executable
+      return process.platform === 'win32' ? nodeDir : join(nodeDir, 'bin')
+    }
+  }
+  return null
+}
+
+/**
+ * Get environment variables with bundled Node.js directory appended to PATH.
+ * This ensures npx.cmd can find node.exe when spawned with shell: true,
+ * while preferring any system-installed Node.js over the bundled one.
+ */
+export function getNodeEnv(extraEnv: Record<string, string> = {}): Record<string, string> {
+  const bundledNodeDir = getBundledNodeDir()
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
+  const pathSep = process.platform === 'win32' ? ';' : ':'
+  const existingPath = process.env[pathKey] || process.env.PATH || ''
+  const pathEnv = bundledNodeDir
+    ? { [pathKey]: `${existingPath}${pathSep}${bundledNodeDir}` }
+    : {}
+  return { ...process.env as Record<string, string>, ...pathEnv, ...extraEnv }
+}
+
 // Connection state
 const connections: Map<string, ConnectionStatus> = new Map([
   ['workiq', { id: 'workiq', type: 'workiq', authenticated: false, verified: false, checking: false, lastError: null, lastPolledAt: null, activeAccount: null }],
@@ -53,16 +87,16 @@ function broadcastConnectionStatus(): void {
 // === Check CLI Availability ===
 
 export async function checkCliAvailability(): Promise<{ gh: boolean; npx: boolean }> {
-  const check = (cmd: string, args: string[]): Promise<boolean> =>
+  const check = (cmd: string, args: string[], env?: Record<string, string>): Promise<boolean> =>
     new Promise(resolve => {
-      const proc = spawn(cmd, args, { shell: true, stdio: 'ignore' })
+      const proc = spawn(cmd, args, { env: env || process.env as Record<string, string>, shell: true, stdio: 'ignore' })
       proc.on('close', (code) => resolve(code === 0))
       proc.on('error', () => resolve(false))
     })
 
   const [gh, npxAvailable] = await Promise.all([
     check('gh', ['--version']),
-    check(npx(), ['--version'])
+    check(npx(), ['--version'], getNodeEnv())
   ])
   return { gh, npx: npxAvailable }
 }
@@ -192,6 +226,7 @@ export async function switchGhAccount(account: string): Promise<void> {
 async function acceptWorkiqEula(): Promise<void> {
   return new Promise(resolve => {
     const proc = spawn(npx(), ['-y', '@microsoft/workiq@preview', 'accept-eula'], {
+      env: getNodeEnv(),
       shell: true, stdio: 'ignore'
     })
     proc.on('close', () => resolve())
@@ -310,6 +345,7 @@ export function authenticateMicrosoft(): Promise<void> {
     }
 
     const proc = spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'login'], {
+      env: getNodeEnv(),
       shell: true,
       stdio: ['pipe', 'pipe', 'pipe']
     })
@@ -435,7 +471,7 @@ export async function disconnect(type: 'workiq' | 'github'): Promise<void> {
     conn.checking = false
     conn.lastError = null
   } else if (type === 'workiq') {
-    spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { shell: true, stdio: 'ignore' })
+    spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { env: getNodeEnv(), shell: true, stdio: 'ignore' })
     conn.authenticated = false
     conn.verified = false
     conn.checking = false
