@@ -17,9 +17,9 @@
     "fetch-model": "node scripts/fetch-model.mjs",
     "fetch-runtimes": "node scripts/fetch-runtimes.mjs",
     "dist": "npm run fetch-model && npm run fetch-runtimes && electron-vite build && electron-builder",
-    "dist:mac": "npm run fetch-model && electron-vite build && electron-builder --mac",
-    "dist:win": "npm run fetch-model && electron-vite build && electron-builder --win",
-    "dist:linux": "npm run fetch-model && electron-vite build && electron-builder --linux",
+    "dist:mac": "npm run fetch-model && npm run fetch-runtimes && electron-vite build && electron-builder --mac",
+    "dist:win": "npm run fetch-model && npm run fetch-runtimes && electron-vite build && electron-builder --win",
+    "dist:linux": "npm run fetch-model && npm run fetch-runtimes && electron-vite build && electron-builder --linux",
     "postinstall": "npx @electron/rebuild --only better-sqlite3 && npx playwright install chromium"
   },
   "dependencies": {
