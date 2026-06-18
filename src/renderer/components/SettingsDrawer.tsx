@@ -92,6 +92,8 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const [ghAccounts, setGhAccounts] = useState<{ account: string; active: boolean }[]>([])
   const [switching, setSwitching] = useState(false)
   const [connecting, setConnecting] = useState<string | null>(null)
+  const [showDiagnostics, setShowDiagnostics] = useState(false)
+  const [diagnostics, setDiagnostics] = useState<any>(null)
 
   useEffect(() => {
     window.aide.connections.checkCli().then(setCliStatus)
@@ -107,6 +109,12 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
     } finally {
       setSwitching(false)
     }
+  }
+
+  const loadDiagnostics = async () => {
+    const diag = await window.aide.system.diagnostics()
+    setDiagnostics(diag)
+    setShowDiagnostics(true)
   }
 
   const isCliMissing = (type: string) => {
@@ -150,7 +158,12 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                       : conn.authenticated ? 'Signed in · verifying permissions' : 'Not connected'}
                   </span>
                 </div>
-                {conn.lastError && <p className="text-[11px] text-danger mt-1">{conn.lastError}</p>}
+                {conn.lastError && (
+                  <div className="mt-1">
+                    <p className="text-[11px] text-danger">{conn.lastError}</p>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">Press Ctrl+Shift+I to open DevTools for more details</p>
+                  </div>
+                )}
                 {conn.type === 'github' && conn.authenticated && ghAccounts.length > 1 && (
                   <div className="mt-2">
                     <p className="text-[10px] text-text-tertiary mb-1">Switch account:</p>
@@ -213,6 +226,52 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
       <section className="space-y-3">
         <SectionLabel title="Channels" desc="Pick the one you check most — that's where Aide reaches you." />
         <ChannelsList />
+      </section>
+
+      {/* Debug section */}
+      <section className="space-y-3 pt-4 border-t border-edge-subtle">
+        <div className="flex items-center justify-between">
+          <SectionLabel title="Troubleshooting" desc="Debug connection issues." />
+          <div className="flex gap-2">
+            <button
+              onClick={() => window.aide.system.openDevTools()}
+              className="text-[11px] text-text-tertiary hover:text-text-secondary"
+            >
+              DevTools
+            </button>
+            <button
+              onClick={() => window.aide.system.openUserDataFolder()}
+              className="text-[11px] text-text-tertiary hover:text-text-secondary"
+            >
+              Open Logs Folder
+            </button>
+            <button
+              onClick={loadDiagnostics}
+              className="text-[11px] text-accent hover:underline"
+            >
+              {showDiagnostics ? 'Refresh' : 'Show Diagnostics'}
+            </button>
+          </div>
+        </div>
+        {showDiagnostics && diagnostics && (
+          <div className="bg-surface-2 rounded-lg p-3 text-[11px] font-mono text-text-secondary space-y-1 overflow-x-auto">
+            <p><span className="text-text-tertiary">Platform:</span> {diagnostics.platform} / {diagnostics.arch}</p>
+            <p><span className="text-text-tertiary">App Version:</span> {diagnostics.appVersion}</p>
+            <p><span className="text-text-tertiary">Electron:</span> {diagnostics.electronVersion}</p>
+            <p><span className="text-text-tertiary">Packaged:</span> {diagnostics.isPackaged ? 'Yes' : 'No'}</p>
+            <p><span className="text-text-tertiary">npx Command:</span> {diagnostics.npxCommand}</p>
+            <p><span className="text-text-tertiary">Bundled npx exists:</span> {diagnostics.bundledNpxExists ? '✓' : '✗'} <span className="text-text-tertiary">({diagnostics.bundledNpxPath})</span></p>
+            <p><span className="text-text-tertiary">Resources Path:</span> {diagnostics.resourcesPath}</p>
+            <p><span className="text-text-tertiary">User Data:</span> {diagnostics.userDataPath}</p>
+            {diagnostics.connections?.map((c: any) => (
+              <p key={c.id}>
+                <span className="text-text-tertiary">{c.type}:</span>{' '}
+                {c.verified ? '✓ verified' : c.authenticated ? '⚠ auth only' : '✗ not connected'}
+                {c.lastError && <span className="text-danger ml-2">{c.lastError}</span>}
+              </p>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   )

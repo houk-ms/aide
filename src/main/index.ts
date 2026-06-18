@@ -131,6 +131,14 @@ function createWindow(): void {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url)
   })
 
+  // Ctrl/Cmd+Shift+I opens DevTools (works in production builds too)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'I' && input.shift && (input.control || input.meta)) {
+      mainWindow?.webContents.toggleDevTools()
+      event.preventDefault()
+    }
+  })
+
   // Open DevTools in development
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.webContents.openDevTools({ mode: 'right' })

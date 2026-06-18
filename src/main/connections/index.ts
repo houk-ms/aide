@@ -1,7 +1,71 @@
-import { BrowserWindow, shell } from 'electron'
+import { BrowserWindow, shell, app } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
+import { existsSync } from 'fs'
+import { join } from 'path'
 import { startMcpServer } from '../agent/mcp'
 import type { ConnectionStatus } from '@shared/types'
+
+// === Bundled Runtime Resolution ===
+
+/**
+ * Get the npx command, preferring the bundled Node.js runtime if available.
+ * In packaged builds, we ship a portable Node.js in extraResources/runtimes/node.
+ * Falls back to system npx if bundled version not found.
+ */
+function getNpxCommand(): string {
+  if (app.isPackaged) {
+    const bundledNpx = process.platform === 'win32'
+      ? join(process.resourcesPath, 'runtimes', 'node', 'npx.cmd')
+      : join(process.resourcesPath, 'runtimes', 'node', 'bin', 'npx')
+    if (existsSync(bundledNpx)) {
+      console.log('[Aide] Using bundled npx:', bundledNpx)
+      // Quote the path for shell execution if it contains spaces
+      return bundledNpx.includes(' ') ? `"${bundledNpx}"` : bundledNpx
+    }
+  }
+  return 'npx'
+}
+
+// Cache the resolved npx command
+let _npxCommand: string | null = null
+function npx(): string {
+  if (_npxCommand === null) _npxCommand = getNpxCommand()
+  return _npxCommand
+}
+
+/**
+ * Get the bundled Node.js directory path.
+ * Returns null if not in a packaged build or bundled runtime doesn't exist.
+ */
+export function getBundledNodeDir(): string | null {
+  if (app.isPackaged) {
+    const nodeDir = join(process.resourcesPath, 'runtimes', 'node')
+    const nodeExe = process.platform === 'win32'
+      ? join(nodeDir, 'node.exe')
+      : join(nodeDir, 'bin', 'node')
+    if (existsSync(nodeExe)) {
+      // Return the directory containing the node executable
+      return process.platform === 'win32' ? nodeDir : join(nodeDir, 'bin')
+    }
+  }
+  return null
+}
+
+/**
+ * Get environment variables with bundled Node.js directory appended to PATH.
+ * This ensures npx.cmd can find node.exe when spawned with shell: true,
+ * while preferring any system-installed Node.js over the bundled one.
+ */
+export function getNodeEnv(extraEnv: Record<string, string> = {}): Record<string, string> {
+  const bundledNodeDir = getBundledNodeDir()
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
+  const pathSep = process.platform === 'win32' ? ';' : ':'
+  const existingPath = process.env[pathKey] || process.env.PATH || ''
+  const pathEnv = bundledNodeDir
+    ? { [pathKey]: `${existingPath}${pathSep}${bundledNodeDir}` }
+    : {}
+  return { ...process.env as Record<string, string>, ...pathEnv, ...extraEnv }
+}
 
 // Connection state
 const connections: Map<string, ConnectionStatus> = new Map([
@@ -23,18 +87,18 @@ function broadcastConnectionStatus(): void {
 // === Check CLI Availability ===
 
 export async function checkCliAvailability(): Promise<{ gh: boolean; npx: boolean }> {
-  const check = (cmd: string, args: string[]): Promise<boolean> =>
+  const check = (cmd: string, args: string[], env?: Record<string, string>): Promise<boolean> =>
     new Promise(resolve => {
-      const proc = spawn(cmd, args, { shell: true, stdio: 'ignore' })
+      const proc = spawn(cmd, args, { env: env || process.env as Record<string, string>, shell: true, stdio: 'ignore' })
       proc.on('close', (code) => resolve(code === 0))
       proc.on('error', () => resolve(false))
     })
 
-  const [gh, npx] = await Promise.all([
+  const [gh, npxAvailable] = await Promise.all([
     check('gh', ['--version']),
-    check('npx', ['--version'])
+    check(npx(), ['--version'], getNodeEnv())
   ])
-  return { gh, npx }
+  return { gh, npx: npxAvailable }
 }
 
 // === Check CLI Auth Status ===
@@ -161,7 +225,8 @@ export async function switchGhAccount(account: string): Promise<void> {
 
 async function acceptWorkiqEula(): Promise<void> {
   return new Promise(resolve => {
-    const proc = spawn('npx', ['-y', '@microsoft/workiq@preview', 'accept-eula'], {
+    const proc = spawn(npx(), ['-y', '@microsoft/workiq@preview', 'accept-eula'], {
+      env: getNodeEnv(),
       shell: true, stdio: 'ignore'
     })
     proc.on('close', () => resolve())
@@ -279,7 +344,8 @@ export function authenticateMicrosoft(): Promise<void> {
       activeAuthProcess = null
     }
 
-    const proc = spawn('npx', ['-y', '@microsoft/workiq@preview', 'auth', 'login'], {
+    const proc = spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'login'], {
+      env: getNodeEnv(),
       shell: true,
       stdio: ['pipe', 'pipe', 'pipe']
     })
@@ -333,8 +399,20 @@ export function authenticateMicrosoft(): Promise<void> {
         broadcastConnectionStatus()
         resolve()
       } else {
+        console.error('[Aide] workiq auth failed (code', code, '):', output)
         const conn = connections.get('workiq')
-        if (conn) { conn.lastError = 'Authentication failed'; conn.authenticated = false; conn.checking = false }
+        // Provide more helpful error message based on output
+        let errorMsg = 'Authentication failed'
+        if (/ENOENT|not found|cannot find/i.test(output)) {
+          errorMsg = 'Could not start workiq CLI — Node.js runtime may be missing'
+        } else if (/network|ETIMEDOUT|ECONNREFUSED/i.test(output)) {
+          errorMsg = 'Authentication failed — network error'
+        } else if (output.trim()) {
+          // Include first line of output as hint
+          const firstLine = output.trim().split('\n')[0].slice(0, 80)
+          errorMsg = `Authentication failed: ${firstLine}`
+        }
+        if (conn) { conn.lastError = errorMsg; conn.authenticated = false; conn.checking = false }
         broadcastConnectionStatus()
         reject(new Error('workiq auth login failed'))
       }
@@ -342,6 +420,14 @@ export function authenticateMicrosoft(): Promise<void> {
 
     proc.on('error', (err) => {
       activeAuthProcess = null
+      console.error('[Aide] workiq spawn error:', err)
+      const conn = connections.get('workiq')
+      if (conn) {
+        conn.lastError = `Could not start workiq CLI: ${err.message}`
+        conn.authenticated = false
+        conn.checking = false
+      }
+      broadcastConnectionStatus()
       reject(new Error(`workiq CLI not available: ${err.message}`))
     })
 
@@ -385,7 +471,7 @@ export async function disconnect(type: 'workiq' | 'github'): Promise<void> {
     conn.checking = false
     conn.lastError = null
   } else if (type === 'workiq') {
-    spawn('npx', ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { shell: true, stdio: 'ignore' })
+    spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { env: getNodeEnv(), shell: true, stdio: 'ignore' })
     conn.authenticated = false
     conn.verified = false
     conn.checking = false
@@ -479,7 +565,45 @@ export function getMcpEnv(type: 'workiq' | 'github'): Record<string, string> | n
   return null
 }
 
-export const MCP_CONFIG = {
-  workiq: { command: 'npx', args: ['-y', '@microsoft/workiq@preview', 'mcp'] },
-  github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] }
+export function getMcpConfig() {
+  return {
+    workiq: { command: npx(), args: ['-y', '@microsoft/workiq@preview', 'mcp'] },
+    github: { command: npx(), args: ['-y', '@modelcontextprotocol/server-github'] }
+  }
+}
+
+// === Diagnostics ===
+
+export interface ConnectionDiagnostics {
+  platform: string
+  arch: string
+  electronVersion: string
+  appVersion: string
+  isPackaged: boolean
+  resourcesPath: string
+  npxCommand: string
+  bundledNpxExists: boolean
+  bundledNpxPath: string
+  userDataPath: string
+  connections: ConnectionStatus[]
+}
+
+export function getDiagnostics(): ConnectionDiagnostics {
+  const bundledNpx = process.platform === 'win32'
+    ? join(process.resourcesPath, 'runtimes', 'node', 'npx.cmd')
+    : join(process.resourcesPath, 'runtimes', 'node', 'bin', 'npx')
+
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    electronVersion: process.versions.electron,
+    appVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    npxCommand: npx(),
+    bundledNpxExists: existsSync(bundledNpx),
+    bundledNpxPath: bundledNpx,
+    userDataPath: app.getPath('userData'),
+    connections: getConnectionStatus()
+  }
 }

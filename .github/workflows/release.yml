@@ -290,6 +290,63 @@ jobs:
           cd ../..
           echo "Sharp x64 installed:" && ls node_modules/@img/ | grep darwin
 
+      # Download portable Node.js runtime for MCP servers. This gets bundled
+      # into the app so users don't need Node.js installed system-wide.
+      # Directory naming uses electron-builder's ${os} convention: mac/linux/win
+      - name: Download Node.js runtime (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_VERSION="20.18.0"
+          mkdir -p runtimes
+          
+          echo "Downloading Node.js v${NODE_VERSION} for win-x64..."
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-win-x64.zip" -o node.zip
+          unzip -q node.zip -d runtimes/
+          mv "runtimes/node-v${NODE_VERSION}-win-x64" runtimes/node-win-x64
+          rm node.zip
+          
+          echo "✓ Node.js runtime ready:"
+          ls -la runtimes/node-win-x64/
+
+      - name: Download Node.js runtime (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_VERSION="20.18.0"
+          mkdir -p runtimes
+          
+          # Download both architectures for universal build
+          for arch in arm64 x64; do
+            echo "Downloading Node.js v${NODE_VERSION} for mac-${arch}..."
+            curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-${arch}.tar.gz" -o node.tar.gz
+            tar -xzf node.tar.gz -C runtimes/
+            mv "runtimes/node-v${NODE_VERSION}-darwin-${arch}" "runtimes/node-mac-${arch}"
+            rm node.tar.gz
+          done
+          
+          echo "✓ Node.js runtimes ready:"
+          ls -la runtimes/
+
+      - name: Download Node.js runtime (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_VERSION="20.18.0"
+          mkdir -p runtimes
+          
+          echo "Downloading Node.js v${NODE_VERSION} for linux-x64..."
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" -o node.tar.gz
+          tar -xzf node.tar.gz -C runtimes/
+          mv "runtimes/node-v${NODE_VERSION}-linux-x64" runtimes/node-linux-x64
+          rm node.tar.gz
+          
+          echo "✓ Node.js runtime ready:"
+          ls -la runtimes/node-linux-x64/
+
       - name: Build & package (${{ matrix.platform }})
         # Publish only on a version tag. A manual workflow_dispatch run still
         # builds + packages (and uploads CI artifacts for verification) but is

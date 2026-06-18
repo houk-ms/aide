@@ -1,9 +1,9 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, app, shell } from 'electron'
 import { listTasks, getTask, createTask, updateTask, markTaskSeen, snoozeTask, listTaskActivities } from '../tasks'
 import { sendMessage, getChatHistory, confirmAction, triggerFirstMessage, listModels, getSelectedModel, setSelectedModel, getReasoningEffort, setReasoningEffort, getContextTier, setContextTier, stopStream, resetSession } from '../agent'
 import { getL0Content, setL0Content, searchMemory, listMemory, updateMemory, deleteMemory } from '../memory'
 import { listJobs, toggleJob, getJobLastSummary, createJob, updateJob, deleteJob, runJob } from '../jobs'
-import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft, checkCliAvailability, listGhAccounts, switchGhAccount } from '../connections'
+import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft, checkCliAvailability, listGhAccounts, switchGhAccount, getDiagnostics } from '../connections'
 import { listProjects, getProject, createProject, updateProject, deleteProject } from '../projects'
 import { getPreferences, setPreferences } from '../preferences'
 import { getWeChatStatus, connectWeChat, disconnectWeChat, pushToWeChat, setTargetUser } from '../wechat'
@@ -155,4 +155,10 @@ export function registerIpcHandlers(): void {
 
   // === System health ===
   ipcMain.handle('system:health', () => ({ sdk: sdkHealth, sdkError }))
+  ipcMain.handle('system:diagnostics', () => getDiagnostics())
+  ipcMain.handle('system:openUserDataFolder', () => shell.openPath(app.getPath('userData')))
+  ipcMain.handle('system:openDevTools', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    win?.webContents.toggleDevTools()
+  })
 }
