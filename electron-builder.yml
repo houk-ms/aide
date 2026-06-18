@@ -119,6 +119,6 @@ appImage:
 
 publish:
   provider: github
-  owner: Tonychen0227
+  owner: houk-ms
   repo: aide
   releaseType: release
