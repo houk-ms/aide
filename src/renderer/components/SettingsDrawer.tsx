@@ -135,6 +135,17 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const [foundryDeployments, setFoundryDeployments] = useState<FoundryDeployment[]>([])
   const [foundrySelectedResource, setFoundrySelectedResource] = useState<FoundryResource | null>(null)
   const [foundryError, setFoundryError] = useState<string | null>(null)
+  const [discoveryProgress, setDiscoveryProgress] = useState<{ scanned: number; total: number } | null>(null)
+
+  // Listen for discovery progress events
+  useEffect(() => {
+    const unsub = window.aideEvents?.on?.((event: any) => {
+      if (event?.type === 'foundry:discovery-progress') {
+        setDiscoveryProgress({ scanned: event.scanned, total: event.total })
+      }
+    })
+    return () => { unsub?.() }
+  }, [])
 
   // Creation flow state
   const [azureSubscriptions, setAzureSubscriptions] = useState<AzureSubscription[]>([])
@@ -148,6 +159,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
 
   const handleFoundrySetup = async () => {
     setShowFoundryPanel(true)
+    setDiscoveryProgress(null)
     setFoundryError(null)
     setFoundryStep('signing-in')
     try {
@@ -439,7 +451,22 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
 
                 {/* Loading resources */}
                 {foundryStep === 'loading-resources' && (
-                  <p className="text-[12px] text-text-tertiary animate-pulse">Discovering AI resources across your subscriptions…</p>
+                  <div className="space-y-1.5">
+                    <p className="text-[12px] text-text-tertiary animate-pulse">
+                      Discovering AI resources across your subscriptions…
+                      {discoveryProgress && discoveryProgress.total > 0 && (
+                        <span className="ml-1 text-text-secondary">({discoveryProgress.scanned}/{discoveryProgress.total})</span>
+                      )}
+                    </p>
+                    {discoveryProgress && discoveryProgress.total > 0 && (
+                      <div className="w-full h-1 bg-surface-2 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent transition-all duration-300"
+                          style={{ width: `${Math.round((discoveryProgress.scanned / discoveryProgress.total) * 100)}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {/* Pick resource */}

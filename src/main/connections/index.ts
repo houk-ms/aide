@@ -596,7 +596,7 @@ export function getMcpConfig() {
 
 // === Foundry (BYOK model provider via Azure SDK) ===
 
-import { InteractiveBrowserCredential, type TokenCredential } from '@azure/identity'
+import { InteractiveBrowserCredential, type TokenCredential, type AccessToken } from '@azure/identity'
 import { SubscriptionClient } from '@azure/arm-subscriptions'
 import { CognitiveServicesManagementClient } from '@azure/arm-cognitiveservices'
 import type { FoundryConfig, FoundryResource, FoundryDeployment } from '@shared/types'
@@ -606,6 +606,35 @@ const FOUNDRY_KEY_FILE = 'foundry-key.enc'
 
 function foundryPath(file: string): string {
   return join(app.getPath('userData'), file)
+}
+
+/**
+ * Token credential wrapper that caches the token and deduplicates concurrent
+ * getToken() calls.  Prevents the underlying InteractiveBrowserCredential from
+ * opening the browser more than once and ensures parallel SDK clients all share
+ * a single valid token.
+ */
+class CachedCredential implements TokenCredential {
+  private cached: AccessToken | null = null
+  private inflight: Promise<AccessToken> | null = null
+
+  constructor(private source: TokenCredential, initialToken?: AccessToken | null) {
+    if (initialToken) this.cached = initialToken
+  }
+
+  async getToken(scopes: string | string[], options?: any): Promise<AccessToken> {
+    // Return cached token if still valid (5-min buffer)
+    if (this.cached && this.cached.expiresOnTimestamp > Date.now() + 5 * 60 * 1000) {
+      return this.cached
+    }
+    // Deduplicate: if a refresh is already in flight, piggy-back on it
+    if (!this.inflight) {
+      this.inflight = this.source.getToken(scopes, options)
+        .then(token => { this.cached = token; this.inflight = null; return token! })
+        .catch(err => { this.inflight = null; throw err })
+    }
+    return this.inflight
+  }
 }
 
 // Cached Azure credential (survives for the session after login)
@@ -643,9 +672,10 @@ export async function foundryLogin(): Promise<void> {
     const credential = new InteractiveBrowserCredential({
       redirectUri: 'http://localhost:48901'
     })
-    // Force a token fetch to validate the login actually works
-    await credential.getToken('https://management.azure.com/.default')
-    azureCredential = credential
+    // Force a token fetch to validate the login — this is the only interactive prompt
+    const initialToken = await credential.getToken('https://management.azure.com/.default')
+    // Wrap in CachedCredential with pre-seeded token so SDK clients never re-prompt
+    azureCredential = new CachedCredential(credential, initialToken)
 
     conn.authenticated = true
     conn.checking = false
@@ -668,7 +698,6 @@ export async function foundryListResources(): Promise<FoundryResource[]> {
   if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
 
   const subClient = new SubscriptionClient(azureCredential)
-  const resources: FoundryResource[] = []
 
   // List all subscriptions
   const subs: { subscriptionId: string; displayName: string }[] = []
@@ -678,33 +707,52 @@ export async function foundryListResources(): Promise<FoundryResource[]> {
     }
   }
 
-  // For each subscription, list Cognitive Services accounts (includes OpenAI)
-  for (const sub of subs) {
-    try {
-      const csClient = new CognitiveServicesManagementClient(azureCredential, sub.subscriptionId)
+  const total = subs.length
+  let scanned = 0
+
+  /** Broadcast progress to all renderer windows. */
+  const emitProgress = () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('aide:event', {
+        type: 'foundry:discovery-progress',
+        scanned,
+        total
+      })
+    }
+  }
+
+  emitProgress() // 0/N
+
+  // Query all subscriptions in parallel (the main speedup)
+  const results = await Promise.allSettled(
+    subs.map(async (sub) => {
+      const csClient = new CognitiveServicesManagementClient(azureCredential!, sub.subscriptionId)
+      const found: FoundryResource[] = []
       for await (const account of csClient.accounts.list()) {
-        // Only show AI Services or OpenAI accounts (these host model deployments)
         const kind = account.kind || ''
         if (kind === 'OpenAI' || kind === 'AIServices' || kind === 'CognitiveServices') {
-          const endpoint = account.properties?.endpoint || ''
-          const rg = extractResourceGroup(account.id || '')
-          resources.push({
+          found.push({
             subscriptionId: sub.subscriptionId,
             subscriptionName: sub.displayName,
-            resourceGroup: rg,
+            resourceGroup: extractResourceGroup(account.id || ''),
             accountName: account.name || '',
-            endpoint,
+            endpoint: account.properties?.endpoint || '',
             kind,
             location: account.location || ''
           })
         }
       }
-    } catch (err) {
-      // Skip subscriptions where we don't have access
-      console.log(`[Foundry] Skipped subscription ${sub.displayName}:`, err instanceof Error ? err.message : String(err))
-    }
-  }
+      scanned++
+      emitProgress()
+      return found
+    })
+  )
 
+  const resources: FoundryResource[] = []
+  for (const r of results) {
+    if (r.status === 'fulfilled') resources.push(...r.value)
+    // rejected = no access to that subscription, skip silently
+  }
   return resources
 }
 
