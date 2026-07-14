@@ -136,6 +136,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const [foundrySelectedResource, setFoundrySelectedResource] = useState<FoundryResource | null>(null)
   const [foundryError, setFoundryError] = useState<string | null>(null)
   const [discoveryProgress, setDiscoveryProgress] = useState<{ scanned: number; total: number } | null>(null)
+  const [resourceFilter, setResourceFilter] = useState('')
 
   // Listen for discovery progress events
   useEffect(() => {
@@ -341,7 +342,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-3 flex-1 min-w-0">
               <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                conn.type === 'workiq' ? 'bg-blue-500/10 text-blue-400' : conn.type === 'foundry' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-zinc-500/10 text-text-secondary'
+                conn.type === 'workiq' ? 'bg-blue-500/10 text-blue-400' : conn.type === 'foundry' ? 'bg-teal-500/10 text-teal-400' : 'bg-zinc-500/10 text-text-secondary'
               }`}>
                 {conn.type === 'workiq' ? <MicrosoftIcon /> : conn.type === 'foundry' ? <FoundryLogo /> : <Github size={18} />}
               </div>
@@ -473,13 +474,33 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                 {foundryStep === 'pick-resource' && (
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <p className="text-[11px] text-text-tertiary">Select an Azure AI resource:</p>
+                      <p className="text-[11px] text-text-tertiary">Select an Azure AI resource ({foundryResources.length}):</p>
                       <button onClick={() => startCreateResourceFlow()} className="text-[11px] text-accent hover:underline flex items-center gap-1">
                         <Plus size={11} /> Create new
                       </button>
                     </div>
+                    <div className="relative">
+                      <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
+                      <input
+                        type="text"
+                        value={resourceFilter}
+                        onChange={e => setResourceFilter(e.target.value)}
+                        placeholder="Filter by name, region, or subscription…"
+                        className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-surface-2 border border-edge text-[12px] text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent"
+                      />
+                    </div>
                     <div className="max-h-48 overflow-y-auto space-y-1">
-                      {foundryResources.map((r, i) => (
+                      {foundryResources
+                        .filter(r => {
+                          if (!resourceFilter.trim()) return true
+                          const q = resourceFilter.toLowerCase()
+                          return r.accountName.toLowerCase().includes(q)
+                            || r.location.toLowerCase().includes(q)
+                            || r.subscriptionName.toLowerCase().includes(q)
+                            || r.kind.toLowerCase().includes(q)
+                            || r.resourceGroup.toLowerCase().includes(q)
+                        })
+                        .map((r, i) => (
                         <button
                           key={i}
                           onClick={() => handleFoundryPickResource(r)}
