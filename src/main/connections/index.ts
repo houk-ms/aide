@@ -3,7 +3,8 @@ import { spawn, ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { startMcpServer } from '../agent/mcp'
-import type { ConnectionStatus } from '@shared/types'
+import { saveSecure, loadSecure, deleteSecure } from '../secure-store'
+import type { ConnectionStatus, FoundryConfig } from '@shared/types'
 
 // === Bundled Runtime Resolution ===
 
@@ -70,7 +71,8 @@ export function getNodeEnv(extraEnv: Record<string, string> = {}): Record<string
 // Connection state
 const connections: Map<string, ConnectionStatus> = new Map([
   ['workiq', { id: 'workiq', type: 'workiq', authenticated: false, verified: false, checking: false, lastError: null, lastPolledAt: null, activeAccount: null }],
-  ['github', { id: 'github', type: 'github', authenticated: false, verified: false, checking: false, lastError: null, lastPolledAt: null, activeAccount: null }]
+  ['github', { id: 'github', type: 'github', authenticated: false, verified: false, checking: false, lastError: null, lastPolledAt: null, activeAccount: null }],
+  ['foundry', { id: 'foundry', type: 'foundry', authenticated: false, verified: false, checking: false, lastError: null, lastPolledAt: null, activeAccount: null }]
 ])
 
 export function getConnectionStatus(): ConnectionStatus[] {
@@ -444,7 +446,7 @@ export function authenticateMicrosoft(): Promise<void> {
 
 // === Disconnect ===
 
-export async function disconnect(type: 'workiq' | 'github'): Promise<void> {
+export async function disconnect(type: 'workiq' | 'github' | 'foundry'): Promise<void> {
   const conn = connections.get(type)
   if (!conn) return
 
@@ -472,6 +474,13 @@ export async function disconnect(type: 'workiq' | 'github'): Promise<void> {
     conn.lastError = null
   } else if (type === 'workiq') {
     spawn(npx(), ['-y', '@microsoft/workiq@preview', 'auth', 'logout'], { env: getNodeEnv(), shell: true, stdio: 'ignore' })
+    conn.authenticated = false
+    conn.verified = false
+    conn.checking = false
+    conn.activeAccount = null
+    conn.lastError = null
+  } else if (type === 'foundry') {
+    deleteFoundryCredentials()
     conn.authenticated = false
     conn.verified = false
     conn.checking = false
@@ -515,6 +524,19 @@ export async function initConnectionState(): Promise<void> {
     wiqConn.checking = true // settled by verifyConnectionsViaMcp via the real server
     wiqConn.lastError = null
     wiqConn.lastPolledAt = now
+  }
+
+  // Foundry: restore from saved credentials
+  const foundryConn = connections.get('foundry')
+  if (foundryConn) {
+    const fConfig = getFoundryConfig()
+    const fKey = getFoundryApiKey()
+    if (fConfig && fKey) {
+      foundryConn.authenticated = true
+      foundryConn.verified = true
+      foundryConn.activeAccount = fConfig.displayName
+    }
+    foundryConn.lastPolledAt = now
   }
 }
 
@@ -569,6 +591,395 @@ export function getMcpConfig() {
   return {
     workiq: { command: npx(), args: ['-y', '@microsoft/workiq@preview', 'mcp'] },
     github: { command: npx(), args: ['-y', '@modelcontextprotocol/server-github'] }
+  }
+}
+
+// === Foundry (BYOK model provider via Azure SDK) ===
+
+import { InteractiveBrowserCredential, type TokenCredential } from '@azure/identity'
+import { SubscriptionClient } from '@azure/arm-subscriptions'
+import { CognitiveServicesManagementClient } from '@azure/arm-cognitiveservices'
+import type { FoundryConfig, FoundryResource, FoundryDeployment } from '@shared/types'
+
+const FOUNDRY_CONFIG_FILE = 'foundry-config.json'
+const FOUNDRY_KEY_FILE = 'foundry-key.enc'
+
+function foundryPath(file: string): string {
+  return join(app.getPath('userData'), file)
+}
+
+// Cached Azure credential (survives for the session after login)
+let azureCredential: TokenCredential | null = null
+
+/** Load saved Foundry config (endpoint, deployment, model info). */
+export function getFoundryConfig(): FoundryConfig | null {
+  return loadSecure<FoundryConfig>(foundryPath(FOUNDRY_CONFIG_FILE))
+}
+
+/** Load saved Foundry API key. */
+export function getFoundryApiKey(): string | null {
+  const data = loadSecure<{ apiKey: string }>(foundryPath(FOUNDRY_KEY_FILE))
+  return data?.apiKey ?? null
+}
+
+/** Delete all Foundry credentials. */
+function deleteFoundryCredentials(): void {
+  deleteSecure(foundryPath(FOUNDRY_CONFIG_FILE))
+  deleteSecure(foundryPath(FOUNDRY_KEY_FILE))
+  azureCredential = null
+}
+
+/**
+ * Step 1: Azure login via browser popup (no CLI required).
+ * Uses @azure/identity InteractiveBrowserCredential which opens the system browser.
+ */
+export async function foundryLogin(): Promise<void> {
+  const conn = connections.get('foundry')!
+  conn.checking = true
+  conn.lastError = null
+  broadcastConnectionStatus()
+
+  try {
+    const credential = new InteractiveBrowserCredential({
+      redirectUri: 'http://localhost:48901'
+    })
+    // Force a token fetch to validate the login actually works
+    await credential.getToken('https://management.azure.com/.default')
+    azureCredential = credential
+
+    conn.authenticated = true
+    conn.checking = false
+    conn.lastError = null
+  } catch (err: any) {
+    conn.authenticated = false
+    conn.checking = false
+    conn.lastError = err?.message || 'Azure sign-in failed'
+    throw err
+  } finally {
+    broadcastConnectionStatus()
+  }
+}
+
+/**
+ * Step 2: Discover Azure AI / OpenAI resources across all subscriptions.
+ * Requires foundryLogin() to have been called first.
+ */
+export async function foundryListResources(): Promise<FoundryResource[]> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+
+  const subClient = new SubscriptionClient(azureCredential)
+  const resources: FoundryResource[] = []
+
+  // List all subscriptions
+  const subs: { subscriptionId: string; displayName: string }[] = []
+  for await (const sub of subClient.subscriptions.list()) {
+    if (sub.subscriptionId && sub.displayName) {
+      subs.push({ subscriptionId: sub.subscriptionId, displayName: sub.displayName })
+    }
+  }
+
+  // For each subscription, list Cognitive Services accounts (includes OpenAI)
+  for (const sub of subs) {
+    try {
+      const csClient = new CognitiveServicesManagementClient(azureCredential, sub.subscriptionId)
+      for await (const account of csClient.accounts.list()) {
+        // Only show AI Services or OpenAI accounts (these host model deployments)
+        const kind = account.kind || ''
+        if (kind === 'OpenAI' || kind === 'AIServices' || kind === 'CognitiveServices') {
+          const endpoint = account.properties?.endpoint || ''
+          const rg = extractResourceGroup(account.id || '')
+          resources.push({
+            subscriptionId: sub.subscriptionId,
+            subscriptionName: sub.displayName,
+            resourceGroup: rg,
+            accountName: account.name || '',
+            endpoint,
+            kind,
+            location: account.location || ''
+          })
+        }
+      }
+    } catch (err) {
+      // Skip subscriptions where we don't have access
+      console.log(`[Foundry] Skipped subscription ${sub.displayName}:`, err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return resources
+}
+
+/** Extract resource group from an Azure resource ID. */
+function extractResourceGroup(resourceId: string): string {
+  const match = resourceId.match(/\/resourceGroups\/([^/]+)/i)
+  return match?.[1] || ''
+}
+
+/**
+ * Step 3: List model deployments within a specific Azure AI resource.
+ */
+export async function foundryListDeployments(
+  subscriptionId: string,
+  resourceGroup: string,
+  accountName: string
+): Promise<FoundryDeployment[]> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+
+  const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+  const deployments: FoundryDeployment[] = []
+
+  for await (const dep of csClient.deployments.list(resourceGroup, accountName)) {
+    deployments.push({
+      name: dep.name || '',
+      model: dep.properties?.model?.name || '',
+      modelVersion: dep.properties?.model?.version || '',
+      skuName: dep.sku?.name || ''
+    })
+  }
+
+  return deployments
+}
+
+// --- Resource / Deployment creation helpers ---
+
+import { ResourceManagementClient } from '@azure/arm-resources'
+import type { FoundryAvailableModel, AzureSubscription, AzureLocation } from '@shared/types'
+
+/**
+ * List all Azure subscriptions the signed-in user can access.
+ */
+export async function foundryListSubscriptions(): Promise<AzureSubscription[]> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+  const subClient = new SubscriptionClient(azureCredential)
+  const result: AzureSubscription[] = []
+  for await (const sub of subClient.subscriptions.list()) {
+    if (sub.subscriptionId && sub.displayName) {
+      result.push({ id: sub.subscriptionId, name: sub.displayName })
+    }
+  }
+  return result
+}
+
+/**
+ * List available Azure locations for a subscription.
+ */
+export async function foundryListLocations(subscriptionId: string): Promise<AzureLocation[]> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+  const subClient = new SubscriptionClient(azureCredential)
+  const result: AzureLocation[] = []
+  for await (const loc of subClient.subscriptions.listLocations(subscriptionId)) {
+    if (loc.name && loc.displayName) {
+      result.push({ name: loc.name, displayName: loc.displayName })
+    }
+  }
+  // Sort by display name for UX
+  return result.sort((a, b) => a.displayName.localeCompare(b.displayName))
+}
+
+/**
+ * List AI models available for deployment in a given region.
+ */
+export async function foundryListAvailableModels(
+  subscriptionId: string,
+  location: string
+): Promise<FoundryAvailableModel[]> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+  const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+  const result: FoundryAvailableModel[] = []
+
+  for await (const model of csClient.models.list(location)) {
+    const name = model.model?.name || ''
+    const version = model.model?.version || ''
+    const format = model.model?.format || ''
+    // Only show deployable OpenAI-compatible models
+    if (format === 'OpenAI' && name && version) {
+      result.push({ name, version, format })
+    }
+  }
+
+  return result
+}
+
+/**
+ * Create a new Azure AI Services resource in the given subscription/location.
+ * Also creates the resource group if it doesn't exist.
+ */
+export async function foundryCreateResource(
+  subscriptionId: string,
+  location: string,
+  resourceGroup: string,
+  accountName: string
+): Promise<FoundryResource> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+
+  // Ensure resource group exists
+  const rmClient = new ResourceManagementClient(azureCredential, subscriptionId)
+  await rmClient.resourceGroups.createOrUpdate(resourceGroup, { location })
+
+  // Create AI Services account
+  const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+  const poller = await csClient.accounts.beginCreate(resourceGroup, accountName, {
+    location,
+    kind: 'AIServices',
+    sku: { name: 'S0' },
+    properties: {}
+  })
+  const account = await poller.pollUntilDone()
+
+  const subClient = new SubscriptionClient(azureCredential)
+  let subName = subscriptionId
+  for await (const s of subClient.subscriptions.list()) {
+    if (s.subscriptionId === subscriptionId) { subName = s.displayName || subscriptionId; break }
+  }
+
+  return {
+    subscriptionId,
+    subscriptionName: subName,
+    resourceGroup,
+    accountName: account.name || accountName,
+    endpoint: account.properties?.endpoint || '',
+    kind: 'AIServices',
+    location
+  }
+}
+
+/**
+ * Create a model deployment within an existing Azure AI resource.
+ */
+export async function foundryCreateDeployment(
+  subscriptionId: string,
+  resourceGroup: string,
+  accountName: string,
+  deploymentName: string,
+  modelName: string,
+  modelVersion: string,
+  modelFormat: string
+): Promise<FoundryDeployment> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+
+  const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+  const poller = await csClient.deployments.beginCreateOrUpdate(
+    resourceGroup,
+    accountName,
+    deploymentName,
+    {
+      sku: { name: 'Standard', capacity: 1 },
+      properties: {
+        model: {
+          name: modelName,
+          version: modelVersion,
+          format: modelFormat
+        }
+      }
+    }
+  )
+  const dep = await poller.pollUntilDone()
+
+  return {
+    name: dep.name || deploymentName,
+    model: modelName,
+    modelVersion,
+    skuName: dep.sku?.name || 'Standard'
+  }
+}
+
+/**
+ * Step 4: User picks a deployment — we fetch the API key and save everything.
+ */
+export async function foundrySelect(
+  subscriptionId: string,
+  resourceGroup: string,
+  accountName: string,
+  endpoint: string,
+  deploymentName: string,
+  model: string
+): Promise<void> {
+  if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
+
+  const conn = connections.get('foundry')!
+  conn.checking = true
+  broadcastConnectionStatus()
+
+  try {
+    // Fetch API keys for the resource
+    const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+    const keys = await csClient.accounts.listKeys(resourceGroup, accountName)
+    const apiKey = keys.key1 || keys.key2
+    if (!apiKey) throw new Error('No API keys available for this resource. Check Azure portal permissions.')
+
+    // Save config + key
+    const config: FoundryConfig = {
+      subscriptionId,
+      resourceGroup,
+      accountName,
+      endpoint: endpoint.replace(/\/+$/, ''),
+      deploymentName,
+      modelId: model,
+      displayName: `${model} (${accountName})`
+    }
+    saveSecure(foundryPath(FOUNDRY_CONFIG_FILE), config)
+    saveSecure(foundryPath(FOUNDRY_KEY_FILE), { apiKey })
+
+    conn.authenticated = true
+    conn.verified = true
+    conn.checking = false
+    conn.lastError = null
+    conn.activeAccount = config.displayName
+  } catch (err: any) {
+    conn.checking = false
+    conn.lastError = err?.message || 'Failed to configure deployment'
+    throw err
+  } finally {
+    broadcastConnectionStatus()
+  }
+}
+
+/**
+ * Build the SDK ProviderConfig for the active Foundry connection.
+ * Returns null if Foundry is not configured.
+ */
+export function getFoundryProviderConfig(): {
+  type: 'azure'
+  baseUrl: string
+  apiKey: string
+  azure: { apiVersion: string }
+  modelId: string
+  wireModel: string
+} | null {
+  const config = getFoundryConfig()
+  const apiKey = getFoundryApiKey()
+  if (!config || !apiKey) return null
+
+  const baseUrl = config.endpoint.replace(/\/+$/, '')
+  return {
+    type: 'azure',
+    baseUrl,
+    apiKey,
+    azure: { apiVersion: config.apiVersion || '2024-10-21' },
+    modelId: config.modelId,
+    wireModel: config.deploymentName
+  }
+}
+
+/**
+ * Check if a model ID corresponds to the Foundry connection.
+ */
+export function isFoundryModel(modelId: string): boolean {
+  return modelId.startsWith('foundry:')
+}
+
+/**
+ * Get the Foundry model as a ModelInfo entry for the model picker.
+ * Returns null if Foundry is not configured/verified.
+ */
+export function getFoundryModelInfo(): import('@shared/types').ModelInfo | null {
+  const conn = connections.get('foundry')
+  if (!conn?.verified) return null
+  const config = getFoundryConfig()
+  if (!config) return null
+  return {
+    id: `foundry:${config.deploymentName}`,
+    name: config.displayName,
+    source: 'foundry'
   }
 }
 

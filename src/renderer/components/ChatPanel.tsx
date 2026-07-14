@@ -598,8 +598,15 @@ export function ChatPanel() {
                 <div className="relative">
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
-                    className="h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                    className={`h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] transition-colors ${
+                      models.find(m => m.id === selectedModel)?.source === 'foundry'
+                        ? 'text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10'
+                        : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2'
+                    }`}
                   >
+                    {models.find(m => m.id === selectedModel)?.source === 'foundry' && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider mr-0.5">⬡</span>
+                    )}
                     {models.find(m => m.id === selectedModel)?.name || selectedModel || 'Model'}
                     <ChevronDown size={11} />
                   </button>
@@ -609,12 +616,33 @@ export function ChatPanel() {
                       <div className="absolute bottom-full left-0 mb-1.5 bg-surface-0 border border-edge rounded-xl shadow-lg py-1.5 min-w-[320px] w-max z-50">
                         {(() => {
                           const featured = ['claude-opus-4.8', 'claude-opus-4.7', 'claude-opus-4.6', 'gpt-5.5', 'gpt-5.4']
+                          const foundryModels = models.filter(m => m.source === 'foundry')
                           const featuredModels = featured
                             .map(id => models.find(m => m.id === id))
                             .filter((m): m is ModelInfo => !!m)
-                          const otherModels = models.filter(m => !featured.includes(m.id))
+                          const otherModels = models.filter(m => !featured.includes(m.id) && m.source !== 'foundry')
                           return (
                             <>
+                              {/* Foundry models section (highlighted at top when present) */}
+                              {foundryModels.length > 0 && (
+                                <>
+                                  <div className="px-3 pt-1.5 pb-1">
+                                    <span className="text-[10px] font-medium uppercase tracking-wider text-cyan-400">Azure AI Foundry</span>
+                                  </div>
+                                  {foundryModels.map(m => (
+                                    <button
+                                      key={m.id}
+                                      onClick={() => handleModelSelect(m.id)}
+                                      className={`w-full text-left px-3 py-1.5 text-[13px] hover:bg-surface-1 transition-colors flex items-center gap-2 ${m.id === selectedModel ? 'text-accent font-medium' : 'text-text-secondary'}`}
+                                    >
+                                      {m.id === selectedModel && <Check size={13} className="shrink-0" />}
+                                      <span className={m.id === selectedModel ? '' : 'ml-[21px]'}>{m.name}</span>
+                                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-medium">BYOK</span>
+                                    </button>
+                                  ))}
+                                  <div className="my-1 border-t border-edge" />
+                                </>
+                              )}
                               {featuredModels.map(m => (
                                 <button
                                   key={m.id}
@@ -625,8 +653,8 @@ export function ChatPanel() {
                                   <span className={m.id === selectedModel ? '' : 'ml-[21px]'}>{m.name}</span>
                                 </button>
                               ))}
-                              {/* If selected model is not in featured, show it at top */}
-                              {selectedModel && !featured.includes(selectedModel) && (
+                              {/* If selected model is not in featured or foundry, show it at top */}
+                              {selectedModel && !featured.includes(selectedModel) && !foundryModels.some(m => m.id === selectedModel) && (
                                 <button
                                   key={selectedModel}
                                   className="w-full text-left px-3 py-1.5 text-[13px] text-accent font-medium flex items-center gap-2"

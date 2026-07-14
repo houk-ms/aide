@@ -191,6 +191,8 @@ export type ContextTier = 'default' | 'long_context'
 export interface ModelInfo {
   id: string
   name: string
+  /** Where this model comes from: 'copilot' (default) or 'foundry' (BYOK). */
+  source?: 'copilot' | 'foundry'
   /** Whether this model supports a configurable reasoning-effort level. */
   supportsReasoningEffort?: boolean
   /** Reasoning-effort menu options this model accepts (only when supported). */
@@ -207,15 +209,68 @@ export interface ModelInfo {
 
 // === Connection ===
 
+export type ConnectionType = 'workiq' | 'github' | 'foundry'
+
 export interface ConnectionStatus {
   id: string
-  type: 'workiq' | 'github'
+  type: ConnectionType
   authenticated: boolean
   verified: boolean // true = actually tested a real API call successfully
   checking: boolean // true = currently verifying via the real MCP server (transient)
   lastError: string | null
   lastPolledAt: string | null
   activeAccount: string | null // e.g. GitHub username
+}
+
+// === Foundry ===
+
+export interface FoundryConfig {
+  subscriptionId: string
+  resourceGroup: string
+  accountName: string
+  endpoint: string           // e.g. https://<name>.openai.azure.com/
+  deploymentName: string     // model deployment name in Foundry
+  modelId: string            // well-known model name for agent behavior lookup (e.g. gpt-4o)
+  displayName: string        // user-facing label for the model picker
+  apiVersion?: string        // Azure API version, defaults to '2024-10-21'
+}
+
+/** A discovered Azure AI resource (Cognitive Services account). */
+export interface FoundryResource {
+  subscriptionId: string
+  subscriptionName: string
+  resourceGroup: string
+  accountName: string
+  endpoint: string
+  kind: string              // e.g. 'OpenAI', 'AIServices'
+  location: string
+}
+
+/** A model deployment within a Foundry resource. */
+export interface FoundryDeployment {
+  name: string              // deployment name
+  model: string             // model name (e.g. 'gpt-4o')
+  modelVersion: string
+  skuName: string           // e.g. 'Standard', 'GlobalStandard'
+}
+
+/** A model available for deployment in a given region. */
+export interface FoundryAvailableModel {
+  name: string              // e.g. 'gpt-4o'
+  version: string           // e.g. '2024-08-06'
+  format: string            // e.g. 'OpenAI'
+}
+
+/** Azure subscription summary for resource creation flow. */
+export interface AzureSubscription {
+  id: string
+  name: string
+}
+
+/** Azure region/location for resource creation. */
+export interface AzureLocation {
+  name: string              // e.g. 'eastus'
+  displayName: string       // e.g. 'East US'
 }
 
 export interface ConnectionDiagnostics {
@@ -352,7 +407,17 @@ export interface AideAPI {
     checkCli(): Promise<{ gh: boolean; npx: boolean }>
     authenticateGitHub(): Promise<void>
     authenticateMicrosoft(): Promise<void>
-    disconnect(type: 'workiq' | 'github'): Promise<void>
+    foundryLogin(): Promise<void>
+    foundryListResources(): Promise<FoundryResource[]>
+    foundryListDeployments(subscriptionId: string, resourceGroup: string, accountName: string): Promise<FoundryDeployment[]>
+    foundrySelect(subscriptionId: string, resourceGroup: string, accountName: string, endpoint: string, deploymentName: string, model: string): Promise<void>
+    foundryListSubscriptions(): Promise<AzureSubscription[]>
+    foundryListLocations(subscriptionId: string): Promise<AzureLocation[]>
+    foundryListAvailableModels(subscriptionId: string, location: string): Promise<FoundryAvailableModel[]>
+    foundryCreateResource(subscriptionId: string, location: string, resourceGroup: string, accountName: string): Promise<FoundryResource>
+    foundryCreateDeployment(subscriptionId: string, resourceGroup: string, accountName: string, deploymentName: string, modelName: string, modelVersion: string, modelFormat: string): Promise<FoundryDeployment>
+    disconnect(type: ConnectionType): Promise<void>
+    getFoundryConfig(): Promise<FoundryConfig | null>
     listGhAccounts(): Promise<{ account: string; active: boolean }[]>
     switchGhAccount(account: string): Promise<void>
   }

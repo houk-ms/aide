@@ -2,7 +2,7 @@ import { getL0Content, searchMemory } from '../memory'
 import { createTask, updateTask, listTasks, getTask } from '../tasks'
 import { getProject, listProjects } from '../projects'
 import { getAutonomyLevel } from '../preferences'
-import { getConnectionStatus } from '../connections'
+import { getConnectionStatus, isFoundryModel, getFoundryProviderConfig, getFoundryModelInfo } from '../connections'
 import { getSkillsDirectory } from '../skills'
 import { saveChatAttachment } from '../files'
 import { showSystemNotification } from '../index'
@@ -530,21 +530,29 @@ async function getSdkModels(): Promise<SdkModelInfo[]> {
 
 export async function listModels(): Promise<ModelInfo[]> {
   const models = await getSdkModels()
-  if (models.length === 0) return [{ id: DEFAULT_MODEL, name: 'Claude Opus 4.8' }]
-  return models.map(m => {
-    const wire = m as SdkModelWire
-    const ctx = contextWindowsOf(m)
-    return {
-      id: m.id,
-      name: m.name,
-      supportsReasoningEffort: m.capabilities?.supports?.reasoningEffort ?? false,
-      supportedReasoningEfforts: normalizeReasoningEfforts(wire.supportedReasoningEfforts),
-      defaultReasoningEffort: normalizeReasoningEffort(wire.defaultReasoningEffort),
-      maxContextWindowTokens: ctx.defaultWindow,
-      supportsLongContext: ctx.supportsLong,
-      longContextWindowTokens: ctx.longWindow
-    }
-  })
+  const copilotModels: ModelInfo[] = models.length === 0
+    ? [{ id: DEFAULT_MODEL, name: 'Claude Opus 4.8' }]
+    : models.map(m => {
+        const wire = m as SdkModelWire
+        const ctx = contextWindowsOf(m)
+        return {
+          id: m.id,
+          name: m.name,
+          source: 'copilot' as const,
+          supportsReasoningEffort: m.capabilities?.supports?.reasoningEffort ?? false,
+          supportedReasoningEfforts: normalizeReasoningEfforts(wire.supportedReasoningEfforts),
+          defaultReasoningEffort: normalizeReasoningEffort(wire.defaultReasoningEffort),
+          maxContextWindowTokens: ctx.defaultWindow,
+          supportsLongContext: ctx.supportsLong,
+          longContextWindowTokens: ctx.longWindow
+        }
+      })
+
+  // Append Foundry model if configured and verified
+  const foundryModel = getFoundryModelInfo()
+  if (foundryModel) copilotModels.push(foundryModel)
+
+  return copilotModels
 }
 
 export function getSelectedModel(): string {
@@ -684,6 +692,19 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
   }
   // Attach reasoning-effort / context-tier when valid for the selected model.
   Object.assign(config, await resolveSessionTuning(model))
+
+  // When the user has selected a Foundry model, inject the BYOK provider so
+  // the SDK routes inference to the Azure AI Foundry endpoint while keeping
+  // the full tool-calling / reasoning loop intact.
+  if (isFoundryModel(model)) {
+    const provider = getFoundryProviderConfig()
+    if (provider) {
+      ;(config as any).provider = provider
+      // Override session model to the well-known name (the SDK needs this for
+      // agent behavior lookup); the wire model is the Azure deployment name.
+      config.model = provider.modelId
+    }
+  }
 
   try {
     return await client.resumeSession(sessionId, config)

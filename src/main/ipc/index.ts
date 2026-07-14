@@ -3,7 +3,7 @@ import { listTasks, getTask, createTask, updateTask, markTaskSeen, snoozeTask, l
 import { sendMessage, getChatHistory, confirmAction, triggerFirstMessage, listModels, getSelectedModel, setSelectedModel, getReasoningEffort, setReasoningEffort, getContextTier, setContextTier, stopStream, resetSession } from '../agent'
 import { getL0Content, setL0Content, searchMemory, listMemory, updateMemory, deleteMemory } from '../memory'
 import { listJobs, toggleJob, getJobLastSummary, createJob, updateJob, deleteJob, runJob } from '../jobs'
-import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft, checkCliAvailability, listGhAccounts, switchGhAccount, getDiagnostics } from '../connections'
+import { getConnectionStatus, disconnect, authenticateGitHub, authenticateMicrosoft, foundryLogin, foundryListResources, foundryListDeployments, foundrySelect, foundryListSubscriptions, foundryListLocations, foundryListAvailableModels, foundryCreateResource, foundryCreateDeployment, getFoundryConfig, checkCliAvailability, listGhAccounts, switchGhAccount, getDiagnostics } from '../connections'
 import { listProjects, getProject, createProject, updateProject, deleteProject } from '../projects'
 import { getPreferences, setPreferences } from '../preferences'
 import { getWeChatStatus, connectWeChat, disconnectWeChat, pushToWeChat, setTargetUser } from '../wechat'
@@ -81,7 +81,17 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('connections:checkCli', () => checkCliAvailability())
   ipcMain.handle('connections:authenticateGitHub', () => authenticateGitHub())
   ipcMain.handle('connections:authenticateMicrosoft', () => authenticateMicrosoft())
+  ipcMain.handle('connections:foundryLogin', () => foundryLogin())
+  ipcMain.handle('connections:foundryListResources', () => foundryListResources())
+  ipcMain.handle('connections:foundryListDeployments', (_, subId, rg, account) => foundryListDeployments(subId, rg, account))
+  ipcMain.handle('connections:foundrySelect', (_, subId, rg, account, endpoint, deployment, model) => foundrySelect(subId, rg, account, endpoint, deployment, model))
+  ipcMain.handle('connections:foundryListSubscriptions', () => foundryListSubscriptions())
+  ipcMain.handle('connections:foundryListLocations', (_, subId) => foundryListLocations(subId))
+  ipcMain.handle('connections:foundryListAvailableModels', (_, subId, location) => foundryListAvailableModels(subId, location))
+  ipcMain.handle('connections:foundryCreateResource', (_, subId, location, rg, name) => foundryCreateResource(subId, location, rg, name))
+  ipcMain.handle('connections:foundryCreateDeployment', (_, subId, rg, account, depName, modelName, modelVer, modelFmt) => foundryCreateDeployment(subId, rg, account, depName, modelName, modelVer, modelFmt))
   ipcMain.handle('connections:disconnect', (_, type) => disconnect(type))
+  ipcMain.handle('connections:getFoundryConfig', () => getFoundryConfig())
   ipcMain.handle('connections:listGhAccounts', () => listGhAccounts())
   ipcMain.handle('connections:switchGhAccount', (_, account) => switchGhAccount(account))
 

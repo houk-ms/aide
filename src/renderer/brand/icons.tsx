@@ -51,3 +51,19 @@ export function DiscordLogo({ size = 18 }: { size?: number }) {
     </svg>
   )
 }
+
+/** Azure AI Foundry logo — stylized hexagonal AI icon. */
+export function FoundryLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <path d="M9 1L16 5V13L9 17L2 13V5L9 1Z" fill="url(#foundry-grad)" />
+      <path d="M9 5.5L12.5 7.5V11.5L9 13.5L5.5 11.5V7.5L9 5.5Z" fill="white" fillOpacity="0.9" />
+      <defs>
+        <linearGradient id="foundry-grad" x1="2" y1="1" x2="16" y2="17">
+          <stop stopColor="#0078D4" />
+          <stop offset="1" stopColor="#50E6FF" />
+        </linearGradient>
+      </defs>
+    </svg>
+  )
+}
