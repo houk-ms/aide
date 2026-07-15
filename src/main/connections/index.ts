@@ -987,7 +987,7 @@ export async function foundryCreateDeployment(
     accountName,
     deploymentName,
     {
-      sku: { name: skuName, capacity: 80 },
+      sku: { name: skuName, capacity: 200 },
       properties: {
         model: {
           name: modelName,

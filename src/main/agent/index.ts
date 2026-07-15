@@ -77,10 +77,6 @@ export async function resetSession(taskId: string | null): Promise<void> {
   } catch (e) {
     console.log(`[Agent] session reset failed (may not exist): ${sessionId}`)
   }
-
-  // Clear tracking so next turn creates a fresh session
-  sessionModelMap.delete(sessionId)
-  sessionToolSetMap.delete(sessionId)
 }
 
 // === Session ID Convention ===

@@ -744,24 +744,33 @@ export function ChatPanel() {
                 />
               </div>
 
-              {/* Send / Stop button */}
-              {isStreaming ? (
+              {/* Reset session + Send / Stop buttons */}
+              <div className="flex items-center gap-1">
                 <button
-                  onClick={() => stopStream(selectedTaskId)}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-all shrink-0"
-                  title="Stop generating"
+                  onClick={() => window.aide.chat.resetSession(selectedTaskId)}
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+                  title="Reset session"
                 >
-                  <Square size={14} fill="currentColor" />
+                  <RotateCcw size={14} strokeWidth={2} />
                 </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  disabled={!input.trim() && attachments.length === 0}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-white disabled:bg-surface-2 disabled:text-text-tertiary transition-all shrink-0"
-                >
-                  <ArrowUp size={16} strokeWidth={2.5} />
-                </button>
-              )}
+                {isStreaming ? (
+                  <button
+                    onClick={() => stopStream(selectedTaskId)}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-all shrink-0"
+                    title="Stop generating"
+                  >
+                    <Square size={14} fill="currentColor" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSend}
+                    disabled={!input.trim() && attachments.length === 0}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-white disabled:bg-surface-2 disabled:text-text-tertiary transition-all shrink-0"
+                  >
+                    <ArrowUp size={16} strokeWidth={2.5} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
