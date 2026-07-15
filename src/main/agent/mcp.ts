@@ -201,19 +201,9 @@ function mcpToolToSdkTool(mcpTool: { name: string; description?: string; inputSc
   // Skip tools that conflict with SDK built-ins
   if (SDK_BUILTIN_TOOLS.has(mcpTool.name)) return null
 
-  // Prefix WorkIQ tools so the model clearly identifies them as M365/Teams tools
-  let toolName = mcpTool.name
-  let toolDescription = mcpTool.description || mcpTool.name
-  if (server.type === 'workiq') {
-    toolName = `workiq_${mcpTool.name}`
-    if (mcpTool.name === 'ask') {
-      toolDescription = 'Query Microsoft 365 workplace data — emails, Teams messages, @mentions, DMs, meetings, documents, and people. Use this tool DIRECTLY (do NOT delegate to a sub-task) whenever the user asks about messages, mentions, communications, or workplace information.'
-    }
-  }
-
   return {
-    name: toolName,
-    description: toolDescription,
+    name: mcpTool.name,
+    description: mcpTool.description || mcpTool.name,
     parameters: mcpTool.inputSchema || { type: 'object', properties: {} },
     handler: async (args: any) => {
       try {

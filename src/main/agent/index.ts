@@ -77,6 +77,7 @@ export async function resetSession(taskId: string | null): Promise<void> {
   } catch (e) {
     console.log(`[Agent] session reset failed (may not exist): ${sessionId}`)
   }
+
   // Clear tracking so next turn creates a fresh session
   sessionModelMap.delete(sessionId)
   sessionToolSetMap.delete(sessionId)
@@ -278,10 +279,7 @@ const hooks: SessionConfig['hooks'] = {
     })
   },
 
-  // On error — log and emit event for UI awareness.
-  // Note: The SDK fires this hook on EACH retry attempt (e.g. 429 rate-limit).
-  // The real final error comes via session.error. We only log here; avoid
-  // spamming the UI with per-retry noise.
+  // On error — log and emit event for UI awareness
   onErrorOccurred: async (input: any, invocation: { sessionId: string }) => {
     const taskId = extractTaskIdFromSession(invocation.sessionId)
     const err = input.error ?? input
@@ -430,14 +428,8 @@ function buildSystemMessage(): string {
   // Gather connected identities
   const conns = getConnectionStatus()
   const ghConn = conns.find(c => c.type === 'github')
-  const wiqConn = conns.find(c => c.type === 'workiq')
   const identityLines: string[] = []
   if (ghConn?.activeAccount) identityLines.push(`- GitHub: ${ghConn.activeAccount}`)
-
-  // WorkIQ instructions (only when connected)
-  const workiqSection = wiqConn?.verified ? `
-## WorkIQ (Microsoft 365)
-You have access to \`workiq_ask\` — use it DIRECTLY (never delegate to a sub-task) to query emails, Teams messages, @mentions, DMs, meetings, calendar, and documents. When the user asks about messages, mentions, or workplace info, call \`workiq_ask\` immediately with a natural-language query.` : ''
 
   return `You are Aide, the user's personal work agent. You help the user manage work, track tasks, and process their information streams.
 
@@ -480,7 +472,7 @@ Be restrained. Quality over quantity.
 
 ## Context awareness
 - In general chat, if something relates to an existing Task → immediately call update_aide_task to record the progress/info in that task's working_state. Don't just suggest switching — update the task right there.
-- When entering a Task chat → briefly state the task's background, status, and suggested handling${workiqSection}`
+- When entering a Task chat → briefly state the task's background, status, and suggested handling`
 }
 
 // === Model Selection & tuning (persisted to DB) ===
@@ -682,104 +674,43 @@ function writeSetting(id: string, content: string): void {
   `).run(id, content, now, now)
 }
 
-// Resolve the per-session tuning for the selected model. Reasoning effort is
-// only attached when the model supports it and the resolved level is one it
-// accepts — the runtime rejects an unsupported effort. Context tier is only
-// attached when the model actually offers a long-context variant and the user
-// has opted into it for that model.
-async function resolveSessionTuning(modelId: string): Promise<{ reasoningEffort?: ReasoningEffort; contextTier?: ContextTier }> {
-  const out: { reasoningEffort?: ReasoningEffort; contextTier?: ContextTier } = {}
-  const info = (await getSdkModels()).find(m => m.id === modelId)
-  if (info?.capabilities?.supports?.reasoningEffort) {
-    const wire = info as SdkModelWire
-    const map = loadEffortMap()
-    const hasStoredEffort = Object.prototype.hasOwnProperty.call(map, modelId)
-    const resolved = hasStoredEffort ? map[modelId] : normalizeReasoningEffort(wire.defaultReasoningEffort)
-    const allowed = normalizeReasoningEfforts(wire.supportedReasoningEfforts)
-    if (resolved && resolved !== 'none' && (!allowed || allowed.includes(resolved))) out.reasoningEffort = resolved
-  }
-  if (info && contextWindowsOf(info).supportsLong && getContextTier(modelId) === 'long_context') {
-    out.contextTier = 'long_context'
-  }
-  return out
-}
-
 // === Core API: send message ===
-
-// Track which model and tool set each session was last used with — if either
-// changes, we must create a fresh session to avoid the SDK injecting
-// tools_changed_notice (which tells the model tools were removed/disabled).
-const sessionModelMap = new Map<string, string>()
-const sessionToolSetMap = new Map<string, string>()
-
 async function getOrCreateSession(taskId: string | null): Promise<CopilotSession> {
-  if (!client) throw sdkUnavailableError()
+  if (!client) throw new Error('Copilot SDK not initialized. Ensure SDK is configured.')
 
   const sessionId = taskId ? getTaskSessionId(taskId) : 'general'
-  const model = getSelectedModel()
+  const modelId = getSelectedModel()
   const config: SessionConfig = {
     sessionId,
-    model,
+    model: modelId,
     streaming: true,
     tools: buildTools(),
     hooks,
     infiniteSessions: { enabled: true },
     systemMessage: { mode: 'append', content: buildSystemMessage() },
-    onPermissionRequest: handlePermissionRequest,
-    skillDirectories: [getSkillsDirectory()]
+    onPermissionRequest: handlePermissionRequest
   }
-  // Attach reasoning-effort / context-tier when valid for the selected model.
-  Object.assign(config, await resolveSessionTuning(model))
 
-  // When the user has selected a Foundry model, inject the BYOK provider so
-  // the SDK routes inference to the Microsoft Foundry endpoint while keeping
-  // the full tool-calling / reasoning loop intact.
-  if (isFoundryModel(model)) {
-    const provider = getFoundryProviderConfig()
-    if (provider) {
-      ;(config as any).provider = provider
-      // Override session model to the well-known name (the SDK needs this for
-      // agent behavior lookup); the wire model is the Azure deployment name.
-      config.model = provider.modelId
-      console.log('[Agent] Foundry provider config:', JSON.stringify({ baseUrl: provider.baseUrl, modelId: provider.modelId, wireModel: provider.wireModel, apiVersion: provider.azure?.apiVersion, type: provider.type }))
-    } else {
-      console.warn('[Agent] Foundry model selected but getFoundryProviderConfig() returned null')
+  // Foundry BYOK: attach provider config so the SDK routes to the user's endpoint
+  if (isFoundryModel(modelId)) {
+    const providerConfig = getFoundryProviderConfig()
+    if (providerConfig) {
+      config.provider = {
+        type: providerConfig.type,
+        baseUrl: providerConfig.baseUrl,
+        apiKey: providerConfig.apiKey,
+        azure: providerConfig.azure,
+        modelId: providerConfig.modelId,
+        wireModel: providerConfig.wireModel
+      }
     }
   }
 
-  // If the model or tool set changed since the last turn on this session,
-  // force a fresh session to prevent the SDK from injecting tools_changed_notice
-  // (which tells the model that tools were removed, breaking tool usage).
-  const effectiveModel = config.model
-  const toolSetKey = config.tools?.map(t => t.name).sort().join(',') || ''
-  const lastModel = sessionModelMap.get(sessionId)
-  const lastToolSet = sessionToolSetMap.get(sessionId)
-  // Force fresh session if: model changed, tools changed, OR first turn after
-  // restart (no prior record — the runtime may have a stale session with a
-  // tools_changed_notice baked into its history).
-  const isFirstTurn = lastModel == null
-  const modelChanged = !isFirstTurn && lastModel !== effectiveModel
-  const toolsChanged = !isFirstTurn && lastToolSet !== toolSetKey
-  sessionModelMap.set(sessionId, effectiveModel)
-  sessionToolSetMap.set(sessionId, toolSetKey)
-
-  if (!isFirstTurn && !modelChanged && !toolsChanged) {
-    try {
-      const session = await client.resumeSession(sessionId, config)
-      console.log(`[Agent] resumed session ${sessionId} with ${config.tools?.length ?? 0} custom tools`)
-      return session
-    } catch {
-      // Session doesn't exist yet — fall through to create
-    }
-  } else {
-    if (isFirstTurn) console.log(`[Agent] First turn after restart for session ${sessionId}, creating fresh session`)
-    if (toolsChanged) console.log(`[Agent] Tool set changed for session ${sessionId}, creating fresh session`)
-    if (modelChanged) console.log(`[Agent] Model changed for session ${sessionId}, creating fresh session`)
+  try {
+    return await client.resumeSession(sessionId, config)
+  } catch {
+    return await client.createSession(config)
   }
-
-  const session = await client.createSession(config)
-  console.log(`[Agent] created session ${sessionId} with ${config.tools?.length ?? 0} custom tools: [${config.tools?.map(t => t.name).join(', ')}]`)
-  return session
 }
 
 // === Turn runner ===
@@ -1036,10 +967,10 @@ export async function executeJobSession(instruction: string, jobId: string, last
   setJobSession(true)
   setCurrentSessionId(sessionId)
   try {
-    const model = getSelectedModel()
-    const jobConfig: any = {
+    const jobModelId = getSelectedModel()
+    const jobConfig: SessionConfig = {
       sessionId,
-      model,
+      model: jobModelId,
       tools: buildTools(),
       hooks: jobHooks,
       infiniteSessions: { enabled: false },
@@ -1048,12 +979,18 @@ export async function executeJobSession(instruction: string, jobId: string, last
       skillDirectories: [getSkillsDirectory()]
     }
 
-    // Apply Foundry BYOK provider if the selected model is a Foundry deployment
-    if (isFoundryModel(model)) {
-      const provider = getFoundryProviderConfig()
-      if (provider) {
-        jobConfig.provider = provider
-        jobConfig.model = provider.modelId
+    // Foundry BYOK: attach provider config so the SDK routes to the user's endpoint
+    if (isFoundryModel(jobModelId)) {
+      const providerConfig = getFoundryProviderConfig()
+      if (providerConfig) {
+        jobConfig.provider = {
+          type: providerConfig.type,
+          baseUrl: providerConfig.baseUrl,
+          apiKey: providerConfig.apiKey,
+          azure: providerConfig.azure,
+          modelId: providerConfig.modelId,
+          wireModel: providerConfig.wireModel
+        }
       }
     }
 
