@@ -2,7 +2,7 @@ import { getL0Content, searchMemory } from '../memory'
 import { createTask, updateTask, listTasks, getTask } from '../tasks'
 import { getProject, listProjects } from '../projects'
 import { getAutonomyLevel } from '../preferences'
-import { getConnectionStatus } from '../connections'
+import { getConnectionStatus, isFoundryModel, getFoundryProviderConfig, getFoundryModelInfo } from '../connections'
 import { getSkillsDirectory } from '../skills'
 import { saveChatAttachment } from '../files'
 import { showSystemNotification } from '../index'
@@ -77,6 +77,17 @@ export async function resetSession(taskId: string | null): Promise<void> {
   } catch (e) {
     console.log(`[Agent] session reset failed (may not exist): ${sessionId}`)
   }
+
+  // Notify the UI that the session was reset
+  const msg: ChatMessage = {
+    id: uuid(),
+    role: 'agent',
+    content: '🔄 Session reset — conversation history cleared. The next message starts a fresh context.',
+    timestamp: new Date().toISOString(),
+    taskId
+  }
+  saveMessage(msg)
+  emitEvent({ type: 'chat:message', message: msg })
 }
 
 // === Session ID Convention ===
@@ -278,13 +289,33 @@ const hooks: SessionConfig['hooks'] = {
   // On error — log and emit event for UI awareness
   onErrorOccurred: async (input: any, invocation: { sessionId: string }) => {
     const taskId = extractTaskIdFromSession(invocation.sessionId)
-    console.error(`[Agent] error in session ${invocation.sessionId}:`, input.error)
+    const err = input.error ?? input
+    // Deeply extract the error message from whatever shape the SDK provides
+    const errorMessage = typeof err === 'string' ? err
+      : err?.message
+        || err?.error?.message
+        || err?.data?.message
+        || err?.data?.error?.message
+        || err?.statusText
+        || err?.code
+        || (typeof err === 'object' && Object.keys(err).length > 0
+          ? JSON.stringify(err, Object.getOwnPropertyNames(err))
+          : null)
+        || null
 
-    // Emit an error event so the UI can display the failure
+    // If the error is empty (SDK passes {} on retries), log context but don't
+    // emit to UI — wait for session.error with the full message.
+    if (!errorMessage || errorMessage === '{}') {
+      const ctx = input.errorContext || 'unknown'
+      console.warn(`[Agent] recoverable ${ctx} error in session ${invocation.sessionId} (retrying...)`)
+      return
+    }
+
+    console.error(`[Agent] error in session ${invocation.sessionId}:`, errorMessage)
     emitEvent({
       type: 'chat:error',
       taskId,
-      error: input.error || 'An error occurred during the agent session'
+      error: errorMessage
     })
   }
 }
@@ -530,21 +561,29 @@ async function getSdkModels(): Promise<SdkModelInfo[]> {
 
 export async function listModels(): Promise<ModelInfo[]> {
   const models = await getSdkModels()
-  if (models.length === 0) return [{ id: DEFAULT_MODEL, name: 'Claude Opus 4.8' }]
-  return models.map(m => {
-    const wire = m as SdkModelWire
-    const ctx = contextWindowsOf(m)
-    return {
-      id: m.id,
-      name: m.name,
-      supportsReasoningEffort: m.capabilities?.supports?.reasoningEffort ?? false,
-      supportedReasoningEfforts: normalizeReasoningEfforts(wire.supportedReasoningEfforts),
-      defaultReasoningEffort: normalizeReasoningEffort(wire.defaultReasoningEffort),
-      maxContextWindowTokens: ctx.defaultWindow,
-      supportsLongContext: ctx.supportsLong,
-      longContextWindowTokens: ctx.longWindow
-    }
-  })
+  const copilotModels: ModelInfo[] = models.length === 0
+    ? [{ id: DEFAULT_MODEL, name: 'Claude Opus 4.8' }]
+    : models.map(m => {
+        const wire = m as SdkModelWire
+        const ctx = contextWindowsOf(m)
+        return {
+          id: m.id,
+          name: m.name,
+          source: 'copilot' as const,
+          supportsReasoningEffort: m.capabilities?.supports?.reasoningEffort ?? false,
+          supportedReasoningEfforts: normalizeReasoningEfforts(wire.supportedReasoningEfforts),
+          defaultReasoningEffort: normalizeReasoningEffort(wire.defaultReasoningEffort),
+          maxContextWindowTokens: ctx.defaultWindow,
+          supportsLongContext: ctx.supportsLong,
+          longContextWindowTokens: ctx.longWindow
+        }
+      })
+
+  // Append Foundry model if configured and verified
+  const foundryModel = getFoundryModelInfo()
+  if (foundryModel) copilotModels.push(foundryModel)
+
+  return copilotModels
 }
 
 export function getSelectedModel(): string {
@@ -642,48 +681,37 @@ function writeSetting(id: string, content: string): void {
   `).run(id, content, now, now)
 }
 
-// Resolve the per-session tuning for the selected model. Reasoning effort is
-// only attached when the model supports it and the resolved level is one it
-// accepts — the runtime rejects an unsupported effort. Context tier is only
-// attached when the model actually offers a long-context variant and the user
-// has opted into it for that model.
-async function resolveSessionTuning(modelId: string): Promise<{ reasoningEffort?: ReasoningEffort; contextTier?: ContextTier }> {
-  const out: { reasoningEffort?: ReasoningEffort; contextTier?: ContextTier } = {}
-  const info = (await getSdkModels()).find(m => m.id === modelId)
-  if (info?.capabilities?.supports?.reasoningEffort) {
-    const wire = info as SdkModelWire
-    const map = loadEffortMap()
-    const hasStoredEffort = Object.prototype.hasOwnProperty.call(map, modelId)
-    const resolved = hasStoredEffort ? map[modelId] : normalizeReasoningEffort(wire.defaultReasoningEffort)
-    const allowed = normalizeReasoningEfforts(wire.supportedReasoningEfforts)
-    if (resolved && resolved !== 'none' && (!allowed || allowed.includes(resolved))) out.reasoningEffort = resolved
-  }
-  if (info && contextWindowsOf(info).supportsLong && getContextTier(modelId) === 'long_context') {
-    out.contextTier = 'long_context'
-  }
-  return out
-}
-
 // === Core API: send message ===
-
 async function getOrCreateSession(taskId: string | null): Promise<CopilotSession> {
-  if (!client) throw sdkUnavailableError()
+  if (!client) throw new Error('Copilot SDK not initialized. Ensure SDK is configured.')
 
   const sessionId = taskId ? getTaskSessionId(taskId) : 'general'
-  const model = getSelectedModel()
+  const modelId = getSelectedModel()
   const config: SessionConfig = {
     sessionId,
-    model,
+    model: modelId,
     streaming: true,
     tools: buildTools(),
     hooks,
     infiniteSessions: { enabled: true },
     systemMessage: { mode: 'append', content: buildSystemMessage() },
-    onPermissionRequest: handlePermissionRequest,
-    skillDirectories: [getSkillsDirectory()]
+    onPermissionRequest: handlePermissionRequest
   }
-  // Attach reasoning-effort / context-tier when valid for the selected model.
-  Object.assign(config, await resolveSessionTuning(model))
+
+  // Foundry BYOK: attach provider config so the SDK routes to the user's endpoint
+  if (isFoundryModel(modelId)) {
+    const providerConfig = getFoundryProviderConfig()
+    if (providerConfig) {
+      config.provider = {
+        type: providerConfig.type,
+        baseUrl: providerConfig.baseUrl,
+        apiKey: providerConfig.apiKey,
+        azure: providerConfig.azure,
+        modelId: providerConfig.modelId,
+        wireModel: providerConfig.wireModel
+      }
+    }
+  }
 
   try {
     return await client.resumeSession(sessionId, config)
@@ -792,9 +820,13 @@ function runTurn(
         case 'session.idle':
           finish('complete')
           break
-        case 'session.error':
-          finish('error', event.data?.message || 'The assistant hit an error.')
+        case 'session.error': {
+          const errData = event.data
+          console.error('[Agent] session.error event data:', JSON.stringify(errData, null, 2))
+          const errMsg = errData?.message || errData?.error?.message || errData?.error || (typeof errData === 'string' ? errData : 'The assistant hit an error.')
+          finish('error', errMsg)
           break
+        }
         case 'abort':
           finish('aborted')
           break
@@ -942,16 +974,34 @@ export async function executeJobSession(instruction: string, jobId: string, last
   setJobSession(true)
   setCurrentSessionId(sessionId)
   try {
-    const session = await client.createSession({
+    const jobModelId = getSelectedModel()
+    const jobConfig: SessionConfig = {
       sessionId,
-      model: getSelectedModel(),
+      model: jobModelId,
       tools: buildTools(),
       hooks: jobHooks,
       infiniteSessions: { enabled: false },
       systemMessage: { mode: 'append', content: buildSystemMessage() },
       onPermissionRequest: jobPermissionHandler,
       skillDirectories: [getSkillsDirectory()]
-    })
+    }
+
+    // Foundry BYOK: attach provider config so the SDK routes to the user's endpoint
+    if (isFoundryModel(jobModelId)) {
+      const providerConfig = getFoundryProviderConfig()
+      if (providerConfig) {
+        jobConfig.provider = {
+          type: providerConfig.type,
+          baseUrl: providerConfig.baseUrl,
+          apiKey: providerConfig.apiKey,
+          azure: providerConfig.azure,
+          modelId: providerConfig.modelId,
+          wireModel: providerConfig.wireModel
+        }
+      }
+    }
+
+    const session = await client.createSession(jobConfig)
 
     // Inject time context into the prompt so Agent knows the time window
     // Inject time context as metadata, not instructions

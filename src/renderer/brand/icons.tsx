@@ -51,3 +51,17 @@ export function DiscordLogo({ size = 18 }: { size?: number }) {
     </svg>
   )
 }
+
+/** Microsoft Foundry logo — stylized hexagonal AI icon. */
+export function FoundryLogo({ size = 18 }: { size?: number }) {
+  return (
+    <img
+      src="https://cdn-dynmedia-1.microsoft.com/is/content/microsoftcorp/product-icon-Microsoft-Foundry-48x48?resMode=sharp2&op_usm=1.5,0.65,15,0&wid=48&hei=48&qlt=100&fit=constrain"
+      width={size}
+      height={size}
+      alt=""
+      aria-hidden="true"
+      style={{ display: 'block' }}
+    />
+  )
+}

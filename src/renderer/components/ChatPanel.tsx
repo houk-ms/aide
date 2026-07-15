@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download, ExternalLink, RotateCw } from 'lucide-react'
+import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download, ExternalLink, RotateCw, RotateCcw } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useChatStore, GENERAL_KEY } from '../stores/chatStore'
 import type { LiveStep } from '../stores/chatStore'
@@ -362,6 +362,36 @@ export function ChatPanel() {
     window.aide.models.getSelected().then(s => { console.log('[SelectedModel]', s); setSelectedModel(s) })
   }, [])
 
+  // Refresh model list when connections change (e.g. new Foundry model connected)
+  useEffect(() => {
+    const unsub = window.aideEvents.on((event: any) => {
+      if (event.type === 'connection:status') {
+        window.aide.models.list().then(ms => {
+          setModels(ms)
+          // If the currently selected model no longer exists, fall back
+          setSelectedModel(prev => {
+            if (prev && ms.some(m => m.id === prev)) return prev
+            // Try newest foundry model first
+            const foundryModels = ms.filter(m => m.source === 'foundry')
+            if (foundryModels.length > 0) {
+              const fallback = foundryModels[foundryModels.length - 1].id
+              window.aide.models.setSelected(fallback)
+              return fallback
+            }
+            // No foundry models — pick any available model
+            if (ms.length > 0) {
+              const fallback = ms[0].id
+              window.aide.models.setSelected(fallback)
+              return fallback
+            }
+            return prev
+          })
+        })
+      }
+    })
+    return unsub
+  }, [])
+
   // Reasoning effort and context tier are both per-model: reload whenever the
   // active model changes so the controls reflect that model's saved settings
   // (effort falls back to the model default; tier falls back to default).
@@ -490,6 +520,14 @@ export function ChatPanel() {
               <ChevronLeft size={16} strokeWidth={2} />
             </button>
             <span className="text-[13px] font-medium text-text-secondary no-drag">Aide</span>
+            <div className="flex-1" />
+            <button
+              onClick={() => { window.aide.chat.resetSession(null); }}
+              className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors no-drag"
+              title="Reset session (clear agent memory)"
+            >
+              <RotateCcw size={14} strokeWidth={2} />
+            </button>
           </div>
           <div className="h-px bg-edge" />
         </header>
@@ -598,8 +636,15 @@ export function ChatPanel() {
                 <div className="relative">
                   <button
                     onClick={() => setShowModelPicker(!showModelPicker)}
-                    className="h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                    className={`h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] transition-colors ${
+                      models.find(m => m.id === selectedModel)?.source === 'foundry'
+                        ? 'text-[#00A3EE] hover:text-[#33b5f1] hover:bg-[#00A3EE]/10'
+                        : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2'
+                    }`}
                   >
+                    {models.find(m => m.id === selectedModel)?.source === 'foundry' && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider mr-0.5">⬡</span>
+                    )}
                     {models.find(m => m.id === selectedModel)?.name || selectedModel || 'Model'}
                     <ChevronDown size={11} />
                   </button>
@@ -609,12 +654,33 @@ export function ChatPanel() {
                       <div className="absolute bottom-full left-0 mb-1.5 bg-surface-0 border border-edge rounded-xl shadow-lg py-1.5 min-w-[320px] w-max z-50">
                         {(() => {
                           const featured = ['claude-opus-4.8', 'claude-opus-4.7', 'claude-opus-4.6', 'gpt-5.5', 'gpt-5.4']
+                          const foundryModels = models.filter(m => m.source === 'foundry')
                           const featuredModels = featured
                             .map(id => models.find(m => m.id === id))
                             .filter((m): m is ModelInfo => !!m)
-                          const otherModels = models.filter(m => !featured.includes(m.id))
+                          const otherModels = models.filter(m => !featured.includes(m.id) && m.source !== 'foundry')
                           return (
                             <>
+                              {/* Foundry models section (highlighted at top when present) */}
+                              {foundryModels.length > 0 && (
+                                <>
+                                  <div className="px-3 pt-1.5 pb-1">
+                                    <span className="text-[10px] font-medium uppercase tracking-wider text-[#00A3EE]">Microsoft Foundry</span>
+                                  </div>
+                                  {foundryModels.map(m => (
+                                    <button
+                                      key={m.id}
+                                      onClick={() => handleModelSelect(m.id)}
+                                      className={`w-full text-left px-3 py-1.5 text-[13px] hover:bg-surface-1 transition-colors flex items-center gap-2 ${m.id === selectedModel ? 'text-accent font-medium' : 'text-text-secondary'}`}
+                                    >
+                                      {m.id === selectedModel && <Check size={13} className="shrink-0" />}
+                                      <span className={m.id === selectedModel ? '' : 'ml-[21px]'}>{m.name}</span>
+                                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-[#00A3EE]/10 text-[#00A3EE] font-medium">BYOK</span>
+                                    </button>
+                                  ))}
+                                  <div className="my-1 border-t border-edge" />
+                                </>
+                              )}
                               {featuredModels.map(m => (
                                 <button
                                   key={m.id}
@@ -625,8 +691,8 @@ export function ChatPanel() {
                                   <span className={m.id === selectedModel ? '' : 'ml-[21px]'}>{m.name}</span>
                                 </button>
                               ))}
-                              {/* If selected model is not in featured, show it at top */}
-                              {selectedModel && !featured.includes(selectedModel) && (
+                              {/* If selected model is not in featured or foundry, show it at top */}
+                              {selectedModel && !featured.includes(selectedModel) && !foundryModels.some(m => m.id === selectedModel) && (
                                 <button
                                   key={selectedModel}
                                   className="w-full text-left px-3 py-1.5 text-[13px] text-accent font-medium flex items-center gap-2"
@@ -678,24 +744,33 @@ export function ChatPanel() {
                 />
               </div>
 
-              {/* Send / Stop button */}
-              {isStreaming ? (
+              {/* Reset session + Send / Stop buttons */}
+              <div className="flex items-center gap-1">
                 <button
-                  onClick={() => stopStream(selectedTaskId)}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-all shrink-0"
-                  title="Stop generating"
+                  onClick={() => window.aide.chat.resetSession(selectedTaskId)}
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors shrink-0"
+                  title="Reset session"
                 >
-                  <Square size={14} fill="currentColor" />
+                  <RotateCcw size={14} strokeWidth={2} />
                 </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  disabled={!input.trim() && attachments.length === 0}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-white disabled:bg-surface-2 disabled:text-text-tertiary transition-all shrink-0"
-                >
-                  <ArrowUp size={16} strokeWidth={2.5} />
-                </button>
-              )}
+                {isStreaming ? (
+                  <button
+                    onClick={() => stopStream(selectedTaskId)}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-all shrink-0"
+                    title="Stop generating"
+                  >
+                    <Square size={14} fill="currentColor" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSend}
+                    disabled={!input.trim() && attachments.length === 0}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-white disabled:bg-surface-2 disabled:text-text-tertiary transition-all shrink-0"
+                  >
+                    <ArrowUp size={16} strokeWidth={2.5} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Project, Job, ConnectionStatus, UserPreferences } from '@shared/types'
+import type { Project, Job, ConnectionStatus, UserPreferences, ConnectionType } from '@shared/types'
 
 interface SettingsStore {
   isOpen: boolean
@@ -18,7 +18,7 @@ interface SettingsStore {
   fetchConnections: () => Promise<void>
   fetchPreferences: () => Promise<void>
   setPreferences: (prefs: Partial<UserPreferences>) => Promise<void>
-  disconnect: (type: 'workiq' | 'github') => Promise<void>
+  disconnect: (type: ConnectionType) => Promise<void>
 }
 
 export const useSettingsStore = create<SettingsStore>((set) => ({

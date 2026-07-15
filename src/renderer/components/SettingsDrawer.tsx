@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { X, Link2, FolderOpen, Timer, Brain, Sliders, Trash2, Plus, Save, Check, Github, Send, RefreshCw, Download, CheckCircle2, AlertCircle, Sparkles, AlertTriangle, Search } from 'lucide-react'
-import { WeChatLogo, TelegramLogo, DiscordLogo } from '../brand/icons'
+import { WeChatLogo, TelegramLogo, DiscordLogo, FoundryLogo } from '../brand/icons'
 import { useSettingsStore } from '../stores/settingsStore'
-import type { Project, Job, ConnectionStatus, MemoryEntry, WeChatStatus, TelegramStatus, DiscordStatus, DeliveryTarget, UpdateState, Skill, BrowsableSkill } from '@shared/types'
+import type { Project, Job, ConnectionStatus, MemoryEntry, WeChatStatus, TelegramStatus, DiscordStatus, DeliveryTarget, UpdateState, Skill, BrowsableSkill, FoundryResource, FoundryDeployment, FoundryAvailableModel, AzureSubscription, AzureLocation } from '@shared/types'
 import { ChannelsList } from '../channels/registry'
 
 function MicrosoftIcon() {
@@ -120,15 +120,559 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const isCliMissing = (type: string) => {
     if (!cliStatus) return false
     if (type === 'github') return !cliStatus.gh
-    return false // workiq uses npx auto-download
+    return false // workiq uses npx auto-download, foundry uses REST
+  }
+
+  // Foundry discovery state
+  const [showFoundryPanel, setShowFoundryPanel] = useState(false)
+  const [foundryStep, setFoundryStep] = useState<
+    'idle' | 'signing-in' | 'loading-resources' | 'pick-resource' |
+    'loading-deployments' | 'pick-deployment' | 'saving' |
+    'create-resource-pick-sub' | 'create-resource-pick-location' | 'create-resource-name' | 'creating-resource' |
+    'create-deployment-pick-model' | 'create-deployment-pick-sku' | 'create-deployment-name' | 'creating-deployment'
+  >('idle')
+  const [foundryResources, setFoundryResources] = useState<FoundryResource[]>([])
+  const [foundryDeployments, setFoundryDeployments] = useState<FoundryDeployment[]>([])
+  const [foundrySelectedResource, setFoundrySelectedResource] = useState<FoundryResource | null>(null)
+  const [foundryError, setFoundryError] = useState<string | null>(null)
+  const [discoveryProgress, setDiscoveryProgress] = useState<{ scanned: number; total: number } | null>(null)
+  const [resourceFilter, setResourceFilter] = useState('')
+
+  // Listen for discovery progress events
+  useEffect(() => {
+    const unsub = window.aideEvents?.on?.((event: any) => {
+      if (event?.type === 'foundry:discovery-progress') {
+        setDiscoveryProgress({ scanned: event.scanned, total: event.total })
+      }
+    })
+    return () => { unsub?.() }
+  }, [])
+
+  // Creation flow state
+  const [azureSubscriptions, setAzureSubscriptions] = useState<AzureSubscription[]>([])
+  const [azureLocations, setAzureLocations] = useState<AzureLocation[]>([])
+  const [availableModels, setAvailableModels] = useState<FoundryAvailableModel[]>([])
+  const [createSubId, setCreateSubId] = useState<string>('')
+  const [createLocation, setCreateLocation] = useState<string>('')
+  const [createResourceName, setCreateResourceName] = useState('')
+  const [createDeploymentName, setCreateDeploymentName] = useState('')
+  const [selectedModel, setSelectedModel] = useState<FoundryAvailableModel | null>(null)
+  const [selectedSku, setSelectedSku] = useState<string>('')
+
+  const handleFoundrySetup = async () => {
+    setShowFoundryPanel(true)
+    setDiscoveryProgress(null)
+    setFoundryError(null)
+    setFoundryStep('signing-in')
+    try {
+      await window.aide.connections.foundryLogin()
+      setFoundryStep('loading-resources')
+      const resources = await window.aide.connections.foundryListResources()
+      setFoundryResources(resources)
+      if (resources.length === 0) {
+        // No resources — offer to create one
+        await startCreateResourceFlow()
+      } else {
+        setFoundryStep('pick-resource')
+      }
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Sign-in failed')
+      setFoundryStep('idle')
+    }
+  }
+
+  /** Begin the "create new resource" flow by loading subscriptions. */
+  const startCreateResourceFlow = async () => {
+    setFoundryError(null)
+    try {
+      const subs = await window.aide.connections.foundryListSubscriptions()
+      setAzureSubscriptions(subs)
+      if (subs.length === 0) {
+        setFoundryError('No Azure subscriptions found on this account.')
+        setFoundryStep('idle')
+      } else if (subs.length === 1) {
+        setCreateSubId(subs[0].id)
+        await loadLocationsForSub(subs[0].id)
+      } else {
+        setFoundryStep('create-resource-pick-sub')
+      }
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Failed to load subscriptions')
+      setFoundryStep('idle')
+    }
+  }
+
+  const loadLocationsForSub = async (subId: string) => {
+    setCreateSubId(subId)
+    try {
+      const locs = await window.aide.connections.foundryListLocations(subId)
+      setAzureLocations(locs)
+      setFoundryStep('create-resource-pick-location')
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Failed to load locations')
+      setFoundryStep('idle')
+    }
+  }
+
+  const handlePickLocation = (loc: string) => {
+    setCreateLocation(loc)
+    setCreateResourceName('')
+    setFoundryStep('create-resource-name')
+  }
+
+  const handleCreateResource = async () => {
+    if (!createResourceName.trim()) return
+    setFoundryStep('creating-resource')
+    setFoundryError(null)
+    try {
+      const rgName = `${createResourceName.trim()}-rg`
+      const resource = await window.aide.connections.foundryCreateResource(createSubId, createLocation, rgName, createResourceName.trim())
+      setFoundrySelectedResource(resource)
+      // After creation, offer to create a deployment
+      await startCreateDeploymentFlow(resource)
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Failed to create resource')
+      setFoundryStep('create-resource-name')
+    }
+  }
+
+  /** Begin the "create new deployment" flow for a given resource. */
+  const startCreateDeploymentFlow = async (resource?: FoundryResource) => {
+    const res = resource || foundrySelectedResource
+    if (!res) return
+    setFoundryError(null)
+    try {
+      const models = await window.aide.connections.foundryListAvailableModels(res.subscriptionId, res.resourceGroup, res.accountName)
+      setAvailableModels(models)
+      if (models.length === 0) {
+        setFoundryError('No models available for deployment in this region.')
+        setFoundryStep('pick-resource')
+      } else {
+        setFoundryStep('create-deployment-pick-model')
+      }
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Failed to load available models')
+      setFoundryStep('pick-resource')
+    }
+  }
+
+  const handlePickModel = (model: FoundryAvailableModel) => {
+    setSelectedModel(model)
+    setCreateDeploymentName(model.name)
+    const skus = model.skus || []
+    // Auto-select SKU if only one available
+    if (skus.length <= 1) {
+      setSelectedSku(skus[0] || 'Standard')
+      setFoundryStep('create-deployment-name')
+    } else {
+      setSelectedSku('')
+      setFoundryStep('create-deployment-pick-sku')
+    }
+  }
+
+  const handleCreateDeployment = async () => {
+    if (!foundrySelectedResource || !selectedModel || !createDeploymentName.trim() || !selectedSku) return
+    setFoundryStep('creating-deployment')
+    setFoundryError(null)
+    try {
+      const dep = await window.aide.connections.foundryCreateDeployment(
+        foundrySelectedResource.subscriptionId,
+        foundrySelectedResource.resourceGroup,
+        foundrySelectedResource.accountName,
+        createDeploymentName.trim(),
+        selectedModel.name,
+        selectedModel.version,
+        selectedModel.format,
+        selectedSku
+      )
+      // Now select it like a normal pick
+      await window.aide.connections.foundrySelect(
+        foundrySelectedResource.subscriptionId,
+        foundrySelectedResource.resourceGroup,
+        foundrySelectedResource.accountName,
+        foundrySelectedResource.endpoint,
+        dep.name,
+        dep.model
+      )
+      setShowFoundryPanel(false)
+      setFoundryStep('idle')
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Failed to create deployment')
+      setFoundryStep('create-deployment-name')
+    }
+  }
+
+  const handleFoundryPickResource = async (resource: FoundryResource) => {
+    setFoundrySelectedResource(resource)
+    setFoundryError(null)
+    setFoundryStep('loading-deployments')
+    try {
+      const deps = await window.aide.connections.foundryListDeployments(resource.subscriptionId, resource.resourceGroup, resource.accountName)
+      setFoundryDeployments(deps)
+      setFoundryStep('pick-deployment')
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Failed to list deployments')
+      setFoundryStep('pick-resource')
+    }
+  }
+
+  const handleFoundryPickDeployment = async (dep: FoundryDeployment) => {
+    if (!foundrySelectedResource) return
+    setFoundryStep('saving')
+    setFoundryError(null)
+    try {
+      await window.aide.connections.foundrySelect(
+        foundrySelectedResource.subscriptionId,
+        foundrySelectedResource.resourceGroup,
+        foundrySelectedResource.accountName,
+        foundrySelectedResource.endpoint,
+        dep.name,
+        dep.model
+      )
+      setShowFoundryPanel(false)
+      setFoundryStep('idle')
+    } catch (err: any) {
+      setFoundryError(err?.message || 'Failed to configure')
+      setFoundryStep('pick-deployment')
+    }
   }
 
   return (
     <div className="space-y-6">
+      {/* Model Providers section — Foundry only */}
+      <section className="space-y-3">
+        <SectionLabel title="Model Providers" desc="Bring your own models to power Aide workloads — from providers like Microsoft Foundry." />
+        <div className="space-y-4">
+          {connections.filter(c => c.type === 'foundry').map(conn => (
+            <Card key={conn.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-[#00A3EE]/10 text-[#00A3EE]">
+                    <FoundryLogo />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-text-primary">Microsoft Foundry</p>
+                    <p className="text-[12px] text-text-tertiary mt-0.5">Use your own Azure-deployed models as the LLM backend</p>
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <div className={`w-[6px] h-[6px] rounded-full ${
+                        conn.checking ? 'bg-text-tertiary animate-pulse' : conn.verified ? 'bg-success' : conn.authenticated ? 'bg-warning' : 'bg-text-tertiary'
+                      }`} />
+                      <span className={`text-[11px] ${
+                        conn.checking ? 'text-text-tertiary' : conn.verified ? 'text-success' : conn.authenticated ? 'text-warning' : 'text-text-tertiary'
+                      }`}>
+                        {conn.checking
+                          ? 'Checking connection…'
+                          : conn.verified
+                          ? `Connected${conn.activeAccount ? ` · ${conn.activeAccount}` : ''}`
+                          : conn.authenticated ? 'Signed in · verifying permissions' : 'Not connected'}
+                      </span>
+                    </div>
+                    {conn.lastError && (
+                      <div className="mt-1">
+                        <p className="text-[11px] text-danger">{conn.lastError}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {conn.authenticated && (
+                    <Btn variant="danger" onClick={() => disconnect(conn.type)}>Disconnect</Btn>
+                  )}
+                  <Btn
+                    disabled={foundryStep === 'signing-in'}
+                    onClick={() => handleFoundrySetup()}
+                  >
+                    {conn.verified ? 'Change Model' : 'Set Up'}
+                  </Btn>
+                </div>
+              </div>
+            </Card>
+          ))}
+
+          {/* Foundry discovery panel (stepped flow) */}
+          {showFoundryPanel && (
+            <Card>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[12px] text-text-secondary font-medium">Microsoft Foundry Setup</p>
+                  <button onClick={() => { setShowFoundryPanel(false); setFoundryStep('idle'); setFoundryError(null) }} className="text-text-tertiary hover:text-text-secondary">
+                    <X size={14} />
+                  </button>
+                </div>
+
+                {/* Signing in */}
+                {foundryStep === 'signing-in' && (
+                  <p className="text-[12px] text-text-tertiary animate-pulse">Opening browser for Azure sign-in…</p>
+                )}
+
+                {/* Loading resources */}
+                {foundryStep === 'loading-resources' && (
+                  <div className="space-y-1.5">
+                    <p className="text-[12px] text-text-tertiary animate-pulse">
+                      Discovering AI resources across your subscriptions…
+                      {discoveryProgress && discoveryProgress.total > 0 && (
+                        <span className="ml-1 text-text-secondary">({discoveryProgress.scanned}/{discoveryProgress.total})</span>
+                      )}
+                    </p>
+                    {discoveryProgress && discoveryProgress.total > 0 && (
+                      <div className="w-full h-1 bg-surface-2 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-accent transition-all duration-300"
+                          style={{ width: `${Math.round((discoveryProgress.scanned / discoveryProgress.total) * 100)}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Pick resource */}
+                {foundryStep === 'pick-resource' && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] text-text-tertiary">Select an Azure AI resource ({foundryResources.length}):</p>
+                      <button onClick={() => startCreateResourceFlow()} className="text-[11px] text-accent hover:underline flex items-center gap-1">
+                        <Plus size={11} /> Create new
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
+                      <input
+                        type="text"
+                        value={resourceFilter}
+                        onChange={e => setResourceFilter(e.target.value)}
+                        placeholder="Filter by name, region, or subscription…"
+                        className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-surface-2 border border-edge text-[12px] text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent"
+                      />
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {foundryResources
+                        .filter(r => {
+                          if (!resourceFilter.trim()) return true
+                          const q = resourceFilter.toLowerCase()
+                          return r.accountName.toLowerCase().includes(q)
+                            || r.location.toLowerCase().includes(q)
+                            || r.subscriptionName.toLowerCase().includes(q)
+                            || r.kind.toLowerCase().includes(q)
+                            || r.resourceGroup.toLowerCase().includes(q)
+                        })
+                        .map((r, i) => (
+                        <button
+                          key={i}
+                          onClick={() => handleFoundryPickResource(r)}
+                          className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                        >
+                          <p className="text-[12px] text-text-primary font-medium">{r.accountName}</p>
+                          <p className="text-[10px] text-text-tertiary">{r.kind} · {r.location} · {r.subscriptionName}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Loading deployments */}
+                {foundryStep === 'loading-deployments' && (
+                  <p className="text-[12px] text-text-tertiary animate-pulse">Loading model deployments…</p>
+                )}
+
+                {/* Pick deployment */}
+                {foundryStep === 'pick-deployment' && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => setFoundryStep('pick-resource')} className="text-[11px] text-accent hover:underline">← Back</button>
+                        <p className="text-[11px] text-text-tertiary">
+                          {foundryDeployments.length > 0
+                            ? <>Select a deployment from <span className="font-medium text-text-secondary">{foundrySelectedResource?.accountName}</span>:</>
+                            : <>No deployed models in <span className="font-medium text-text-secondary">{foundrySelectedResource?.accountName}</span>.</>
+                          }
+                        </p>
+                      </div>
+                      <button onClick={() => startCreateDeploymentFlow()} className="text-[11px] text-accent hover:underline flex items-center gap-1">
+                        <Plus size={11} /> Deploy model
+                      </button>
+                    </div>
+                    {foundryDeployments.length === 0 ? (
+                      <div className="px-3 py-4 rounded-lg bg-surface-2 text-center">
+                        <p className="text-[12px] text-text-secondary">This project has no model deployments yet.</p>
+                        <p className="text-[11px] text-text-tertiary mt-1">Click <span className="text-accent font-medium">Deploy model</span> above to pick from available models and create a deployment.</p>
+                      </div>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto space-y-1">
+                        {foundryDeployments.map((d, i) => (
+                          <button
+                            key={i}
+                            onClick={() => handleFoundryPickDeployment(d)}
+                            className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                          >
+                            <p className="text-[12px] text-text-primary font-medium">{d.model} <span className="text-text-tertiary font-normal">({d.name})</span></p>
+                            <p className="text-[10px] text-text-tertiary">v{d.modelVersion} · {d.skuName}</p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* === Create Resource Flow === */}
+
+                {/* Pick subscription (only shown if multiple) */}
+                {foundryStep === 'create-resource-pick-sub' && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      {foundryResources.length > 0 && (
+                        <button onClick={() => setFoundryStep('pick-resource')} className="text-[11px] text-accent hover:underline">← Back</button>
+                      )}
+                      <p className="text-[11px] text-text-tertiary">Select an Azure subscription:</p>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {azureSubscriptions.map(sub => (
+                        <button
+                          key={sub.id}
+                          onClick={() => loadLocationsForSub(sub.id)}
+                          className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                        >
+                          <p className="text-[12px] text-text-primary font-medium">{sub.name}</p>
+                          <p className="text-[10px] text-text-tertiary">{sub.id}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pick location/region */}
+                {foundryStep === 'create-resource-pick-location' && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => azureSubscriptions.length > 1 ? setFoundryStep('create-resource-pick-sub') : setFoundryStep('pick-resource')} className="text-[11px] text-accent hover:underline">← Back</button>
+                      <p className="text-[11px] text-text-tertiary">Select a region:</p>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {azureLocations.map(loc => (
+                        <button
+                          key={loc.name}
+                          onClick={() => handlePickLocation(loc.name)}
+                          className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                        >
+                          <p className="text-[12px] text-text-primary">{loc.displayName}</p>
+                          <p className="text-[10px] text-text-tertiary">{loc.name}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Enter resource name */}
+                {foundryStep === 'create-resource-name' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setFoundryStep('create-resource-pick-location')} className="text-[11px] text-accent hover:underline">← Back</button>
+                      <p className="text-[11px] text-text-tertiary">Name your AI resource:</p>
+                    </div>
+                    <input
+                      type="text"
+                      value={createResourceName}
+                      onChange={e => setCreateResourceName(e.target.value)}
+                      placeholder="my-ai-service"
+                      className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-edge text-[12px] text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent"
+                      onKeyDown={e => e.key === 'Enter' && handleCreateResource()}
+                    />
+                    <p className="text-[10px] text-text-tertiary">A resource group named <code className="bg-surface-2 px-1 rounded">{createResourceName.trim() || '…'}-rg</code> will be created automatically.</p>
+                    <Btn onClick={handleCreateResource} disabled={!createResourceName.trim()}>Create Resource</Btn>
+                  </div>
+                )}
+
+                {/* Creating resource (spinner) */}
+                {foundryStep === 'creating-resource' && (
+                  <p className="text-[12px] text-text-tertiary animate-pulse">Creating Azure AI resource… This may take a minute.</p>
+                )}
+
+                {/* === Create Deployment Flow === */}
+
+                {/* Pick model to deploy */}
+                {foundryStep === 'create-deployment-pick-model' && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => foundryDeployments.length > 0 ? setFoundryStep('pick-deployment') : setFoundryStep('pick-resource')} className="text-[11px] text-accent hover:underline">← Back</button>
+                      <p className="text-[11px] text-text-tertiary">Pick a model to deploy in <span className="font-medium text-text-secondary">{foundrySelectedResource?.accountName}</span>:</p>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {availableModels.map((m, i) => (
+                        <button
+                          key={i}
+                          onClick={() => handlePickModel(m)}
+                          className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                        >
+                          <p className="text-[12px] text-text-primary font-medium">{m.name}</p>
+                          <p className="text-[10px] text-text-tertiary">v{m.version}{m.skus?.length ? ` · ${m.skus.join(', ')}` : ''}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pick SKU (only shown if model supports multiple) */}
+                {foundryStep === 'create-deployment-pick-sku' && selectedModel && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setFoundryStep('create-deployment-pick-model')} className="text-[11px] text-accent hover:underline">← Back</button>
+                      <p className="text-[11px] text-text-tertiary">Select a SKU for <span className="font-medium text-text-secondary">{selectedModel.name}</span>:</p>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {selectedModel.skus.map(sku => (
+                        <button
+                          key={sku}
+                          onClick={() => { setSelectedSku(sku); setFoundryStep('create-deployment-name') }}
+                          className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                        >
+                          <p className="text-[12px] text-text-primary font-medium">{sku}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Name the deployment */}
+                {foundryStep === 'create-deployment-name' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setFoundryStep('create-deployment-pick-model')} className="text-[11px] text-accent hover:underline">← Back</button>
+                      <p className="text-[11px] text-text-tertiary">Name your deployment:</p>
+                    </div>
+                    <input
+                      type="text"
+                      value={createDeploymentName}
+                      onChange={e => setCreateDeploymentName(e.target.value)}
+                      placeholder={selectedModel?.name || 'my-deployment'}
+                      className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-edge text-[12px] text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent"
+                      onKeyDown={e => e.key === 'Enter' && handleCreateDeployment()}
+                    />
+                    <p className="text-[10px] text-text-tertiary">Deploying <span className="font-medium">{selectedModel?.name}</span> v{selectedModel?.version} with {selectedSku} SKU.</p>
+                    <Btn onClick={handleCreateDeployment} disabled={!createDeploymentName.trim()}>Deploy Model</Btn>
+                  </div>
+                )}
+
+                {/* Creating deployment (spinner) */}
+                {foundryStep === 'creating-deployment' && (
+                  <p className="text-[12px] text-text-tertiary animate-pulse">Deploying model… This may take a few minutes.</p>
+                )}
+
+                {/* Saving */}
+                {foundryStep === 'saving' && (
+                  <p className="text-[12px] text-text-tertiary animate-pulse">Fetching API key and saving configuration…</p>
+                )}
+
+                {/* Error */}
+                {foundryError && <p className="text-[11px] text-danger">{foundryError}</p>}
+              </div>
+            </Card>
+          )}
+        </div>
+      </section>
+
       <section className="space-y-3">
         <SectionLabel title="Sources" desc="Where Aide reads your work from — email, calendar, issues, and more." />
         <div className="space-y-4">
-      {connections.map(conn => (
+      {connections.filter(c => c.type !== 'foundry').map(conn => (
         <Card key={conn.id}>
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -213,7 +757,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                     finally { setConnecting(null) }
                   }}
                 >
-                  {connecting === conn.type ? 'Connecting…' : conn.authenticated ? 'Reauthorize' : 'Connect'}
+                  {connecting === conn.type ? 'Connecting…' : (conn.authenticated ? 'Reauthorize' : 'Connect')}
                 </Btn>
               )}
             </div>

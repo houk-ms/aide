@@ -1,6 +1,7 @@
 import { desktop, isDesktopAvailable, getDesktopUnavailableReason, getAllDisplays, getGridCellCoords } from '../automation'
 import type { Tool, SessionConfig, PermissionRequestResult } from '@github/copilot-sdk'
 import { getClient, getSelectedModel } from './index'
+import { isFoundryModel, getFoundryProviderConfig } from '../connections'
 import { BrowserWindow, app } from 'electron'
 import path from 'path'
 import fs from 'fs'
@@ -860,15 +861,31 @@ export async function runDesktopSubagent(
   }
 
   try {
+    const desktopModelId = getSelectedModel()
     const config: Partial<SessionConfig> = {
       sessionId,
-      model: getSelectedModel(),
+      model: desktopModelId,
       streaming: true,  // Enable streaming for progress visibility
       tools: desktopTools,
       hooks,  // Add hooks to emit tool events
       infiniteSessions: { enabled: false },  // Ephemeral session
       systemMessage: { content: DESKTOP_AGENT_PROMPT },
       onPermissionRequest: () => ({ kind: 'approve-once' as const })  // Auto-approve within sub-agent
+    }
+
+    // Foundry BYOK: attach provider config so the SDK routes to the user's endpoint
+    if (isFoundryModel(desktopModelId)) {
+      const providerConfig = getFoundryProviderConfig()
+      if (providerConfig) {
+        config.provider = {
+          type: providerConfig.type,
+          baseUrl: providerConfig.baseUrl,
+          apiKey: providerConfig.apiKey,
+          azure: providerConfig.azure,
+          modelId: providerConfig.modelId,
+          wireModel: providerConfig.wireModel
+        }
+      }
     }
 
     const session = await client.createSession(config as SessionConfig)
