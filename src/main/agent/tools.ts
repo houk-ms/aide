@@ -20,6 +20,7 @@ import { desktopAutomationTool } from './desktop-agent'
 export function buildTools(): Tool<any>[] {
   // Internal tools + all active MCP server tools
   const mcpTools = getActiveMcpTools()
+  console.log(`[Agent] buildTools: ${mcpTools.length} MCP tools active (${mcpTools.map(t => t.name).join(', ')})`)
   return [
     memoryWriteTool,
     memorySearchTool,

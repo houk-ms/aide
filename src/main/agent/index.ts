@@ -275,16 +275,39 @@ const hooks: SessionConfig['hooks'] = {
     })
   },
 
-  // On error — log and emit event for UI awareness
+  // On error — log and emit event for UI awareness.
+  // Note: The SDK fires this hook on EACH retry attempt (e.g. 429 rate-limit).
+  // The real final error comes via session.error. We only log here; avoid
+  // spamming the UI with per-retry noise.
   onErrorOccurred: async (input: any, invocation: { sessionId: string }) => {
     const taskId = extractTaskIdFromSession(invocation.sessionId)
-    console.error(`[Agent] error in session ${invocation.sessionId}:`, input.error)
+    const err = input.error ?? input
+    // Deeply extract the error message from whatever shape the SDK provides
+    const errorMessage = typeof err === 'string' ? err
+      : err?.message
+        || err?.error?.message
+        || err?.data?.message
+        || err?.data?.error?.message
+        || err?.statusText
+        || err?.code
+        || (typeof err === 'object' && Object.keys(err).length > 0
+          ? JSON.stringify(err, Object.getOwnPropertyNames(err))
+          : null)
+        || null
 
-    // Emit an error event so the UI can display the failure
+    // If the error is empty (SDK passes {} on retries), log context but don't
+    // emit to UI — wait for session.error with the full message.
+    if (!errorMessage || errorMessage === '{}') {
+      const ctx = input.errorContext || 'unknown'
+      console.warn(`[Agent] recoverable ${ctx} error in session ${invocation.sessionId} (retrying...)`)
+      return
+    }
+
+    console.error(`[Agent] error in session ${invocation.sessionId}:`, errorMessage)
     emitEvent({
       type: 'chat:error',
       taskId,
-      error: input.error || 'An error occurred during the agent session'
+      error: errorMessage
     })
   }
 }
@@ -404,8 +427,14 @@ function buildSystemMessage(): string {
   // Gather connected identities
   const conns = getConnectionStatus()
   const ghConn = conns.find(c => c.type === 'github')
+  const wiqConn = conns.find(c => c.type === 'workiq')
   const identityLines: string[] = []
   if (ghConn?.activeAccount) identityLines.push(`- GitHub: ${ghConn.activeAccount}`)
+
+  // WorkIQ instructions (only when connected)
+  const workiqSection = wiqConn?.verified ? `
+## WorkIQ (Microsoft 365)
+You have access to \`workiq_ask\` — use it DIRECTLY (never delegate to a sub-task) to query emails, Teams messages, @mentions, DMs, meetings, calendar, and documents. When the user asks about messages, mentions, or workplace info, call \`workiq_ask\` immediately with a natural-language query.` : ''
 
   return `You are Aide, the user's personal work agent. You help the user manage work, track tasks, and process their information streams.
 
@@ -448,7 +477,7 @@ Be restrained. Quality over quantity.
 
 ## Context awareness
 - In general chat, if something relates to an existing Task → immediately call update_aide_task to record the progress/info in that task's working_state. Don't just suggest switching — update the task right there.
-- When entering a Task chat → briefly state the task's background, status, and suggested handling`
+- When entering a Task chat → briefly state the task's background, status, and suggested handling${workiqSection}`
 }
 
 // === Model Selection & tuning (persisted to DB) ===
@@ -674,6 +703,12 @@ async function resolveSessionTuning(modelId: string): Promise<{ reasoningEffort?
 
 // === Core API: send message ===
 
+// Track which model and tool set each session was last used with — if either
+// changes, we must create a fresh session to avoid the SDK injecting
+// tools_changed_notice (which tells the model tools were removed/disabled).
+const sessionModelMap = new Map<string, string>()
+const sessionToolSetMap = new Map<string, string>()
+
 async function getOrCreateSession(taskId: string | null): Promise<CopilotSession> {
   if (!client) throw sdkUnavailableError()
 
@@ -703,14 +738,40 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
       // Override session model to the well-known name (the SDK needs this for
       // agent behavior lookup); the wire model is the Azure deployment name.
       config.model = provider.modelId
+      console.log('[Agent] Foundry provider config:', JSON.stringify({ baseUrl: provider.baseUrl, modelId: provider.modelId, wireModel: provider.wireModel, apiVersion: provider.azure?.apiVersion, type: provider.type }))
+    } else {
+      console.warn('[Agent] Foundry model selected but getFoundryProviderConfig() returned null')
     }
   }
 
-  try {
-    return await client.resumeSession(sessionId, config)
-  } catch {
-    return await client.createSession(config)
+  // If the model or tool set changed since the last turn on this session,
+  // force a fresh session to prevent the SDK from injecting tools_changed_notice
+  // (which tells the model that tools were removed, breaking tool usage).
+  const effectiveModel = config.model
+  const toolSetKey = config.tools?.map(t => t.name).sort().join(',') || ''
+  const lastModel = sessionModelMap.get(sessionId)
+  const lastToolSet = sessionToolSetMap.get(sessionId)
+  const modelChanged = lastModel != null && lastModel !== effectiveModel
+  const toolsChanged = lastToolSet != null && lastToolSet !== toolSetKey
+  sessionModelMap.set(sessionId, effectiveModel)
+  sessionToolSetMap.set(sessionId, toolSetKey)
+
+  if (!modelChanged && !toolsChanged) {
+    try {
+      const session = await client.resumeSession(sessionId, config)
+      console.log(`[Agent] resumed session ${sessionId} with ${config.tools?.length ?? 0} custom tools`)
+      return session
+    } catch {
+      // Session doesn't exist yet — fall through to create
+    }
+  } else {
+    if (toolsChanged) console.log(`[Agent] Tool set changed for session ${sessionId}, creating fresh session`)
+    if (modelChanged) console.log(`[Agent] Model changed for session ${sessionId}, creating fresh session`)
   }
+
+  const session = await client.createSession(config)
+  console.log(`[Agent] created session ${sessionId} with ${config.tools?.length ?? 0} custom tools: [${config.tools?.map(t => t.name).join(', ')}]`)
+  return session
 }
 
 // === Turn runner ===
@@ -813,9 +874,13 @@ function runTurn(
         case 'session.idle':
           finish('complete')
           break
-        case 'session.error':
-          finish('error', event.data?.message || 'The assistant hit an error.')
+        case 'session.error': {
+          const errData = event.data
+          console.error('[Agent] session.error event data:', JSON.stringify(errData, null, 2))
+          const errMsg = errData?.message || errData?.error?.message || errData?.error || (typeof errData === 'string' ? errData : 'The assistant hit an error.')
+          finish('error', errMsg)
           break
+        }
         case 'abort':
           finish('aborted')
           break
@@ -963,16 +1028,28 @@ export async function executeJobSession(instruction: string, jobId: string, last
   setJobSession(true)
   setCurrentSessionId(sessionId)
   try {
-    const session = await client.createSession({
+    const model = getSelectedModel()
+    const jobConfig: any = {
       sessionId,
-      model: getSelectedModel(),
+      model,
       tools: buildTools(),
       hooks: jobHooks,
       infiniteSessions: { enabled: false },
       systemMessage: { mode: 'append', content: buildSystemMessage() },
       onPermissionRequest: jobPermissionHandler,
       skillDirectories: [getSkillsDirectory()]
-    })
+    }
+
+    // Apply Foundry BYOK provider if the selected model is a Foundry deployment
+    if (isFoundryModel(model)) {
+      const provider = getFoundryProviderConfig()
+      if (provider) {
+        jobConfig.provider = provider
+        jobConfig.model = provider.modelId
+      }
+    }
+
+    const session = await client.createSession(jobConfig)
 
     // Inject time context into the prompt so Agent knows the time window
     // Inject time context as metadata, not instructions

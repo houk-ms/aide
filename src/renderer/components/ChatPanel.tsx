@@ -362,6 +362,36 @@ export function ChatPanel() {
     window.aide.models.getSelected().then(s => { console.log('[SelectedModel]', s); setSelectedModel(s) })
   }, [])
 
+  // Refresh model list when connections change (e.g. new Foundry model connected)
+  useEffect(() => {
+    const unsub = window.aideEvents.on((event: any) => {
+      if (event.type === 'connection:status') {
+        window.aide.models.list().then(ms => {
+          setModels(ms)
+          // If the currently selected model no longer exists, fall back
+          setSelectedModel(prev => {
+            if (prev && ms.some(m => m.id === prev)) return prev
+            // Try newest foundry model first
+            const foundryModels = ms.filter(m => m.source === 'foundry')
+            if (foundryModels.length > 0) {
+              const fallback = foundryModels[foundryModels.length - 1].id
+              window.aide.models.setSelected(fallback)
+              return fallback
+            }
+            // No foundry models — pick any available model
+            if (ms.length > 0) {
+              const fallback = ms[0].id
+              window.aide.models.setSelected(fallback)
+              return fallback
+            }
+            return prev
+          })
+        })
+      }
+    })
+    return unsub
+  }, [])
+
   // Reasoning effort and context tier are both per-model: reload whenever the
   // active model changes so the controls reflect that model's saved settings
   // (effort falls back to the model default; tier falls back to default).

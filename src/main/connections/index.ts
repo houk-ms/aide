@@ -812,17 +812,71 @@ export async function foundryListSubscriptions(): Promise<AzureSubscription[]> {
 /**
  * List available Azure locations for a subscription.
  */
+// Regions known to support Azure AI Services / OpenAI model deployments
+const AI_REGIONS = new Set([
+  'australiaeast', 'brazilsouth', 'canadaeast', 'eastus', 'eastus2',
+  'francecentral', 'germanywestcentral', 'japaneast', 'koreacentral',
+  'northcentralus', 'norwayeast', 'polandcentral', 'southafricanorth',
+  'southcentralus', 'southindia', 'swedencentral', 'switzerlandnorth',
+  'uksouth', 'westeurope', 'westus', 'westus2', 'westus3'
+])
+
+/** Check which locations from a list have available AI Services quota. */
+async function filterLocationsByQuota(
+  csClient: CognitiveServicesManagementClient,
+  locations: AzureLocation[]
+): Promise<AzureLocation[]> {
+  const results = await Promise.allSettled(locations.map(async (loc) => {
+    try {
+      for await (const usage of csClient.usages.list(loc.name)) {
+        const name = usage.name?.value || ''
+        if (name.includes('accounts') || name.includes('Accounts')) {
+          if (usage.limit !== undefined && usage.currentValue !== undefined && usage.currentValue >= usage.limit) {
+            return null // Quota exhausted in this region
+          }
+        }
+      }
+      return loc
+    } catch {
+      return null // Region doesn't support AI Services — exclude it
+    }
+  }))
+
+  return results
+    .map(r => r.status === 'fulfilled' ? r.value : null)
+    .filter((loc): loc is AzureLocation => loc !== null)
+}
+
 export async function foundryListLocations(subscriptionId: string): Promise<AzureLocation[]> {
   if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
   const subClient = new SubscriptionClient(azureCredential)
-  const result: AzureLocation[] = []
+  const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+
+  const aiLocations: AzureLocation[] = []
+  const otherLocations: AzureLocation[] = []
   for await (const loc of subClient.subscriptions.listLocations(subscriptionId)) {
     if (loc.name && loc.displayName) {
-      result.push({ name: loc.name, displayName: loc.displayName })
+      if (AI_REGIONS.has(loc.name)) {
+        aiLocations.push({ name: loc.name, displayName: loc.displayName })
+      } else {
+        otherLocations.push({ name: loc.name, displayName: loc.displayName })
+      }
     }
   }
-  // Sort by display name for UX
-  return result.sort((a, b) => a.displayName.localeCompare(b.displayName))
+
+  // First pass: check common AI regions
+  let available = await filterLocationsByQuota(csClient, aiLocations)
+
+  // Second pass: if no common regions have quota, cast a wider net
+  if (available.length === 0 && otherLocations.length > 0) {
+    available = await filterLocationsByQuota(csClient, otherLocations)
+  }
+
+  if (available.length === 0) {
+    throw new Error('No Azure regions with available AI Services quota found for this subscription. Request a quota increase in the Azure portal or try a different subscription.')
+  }
+
+  return available.sort((a, b) => a.displayName.localeCompare(b.displayName))
 }
 
 /**
@@ -866,17 +920,32 @@ export async function foundryCreateResource(
 ): Promise<FoundryResource> {
   if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
 
+  const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+
+  // Double-check quota (regions are pre-filtered, but guard against race conditions)
+  for await (const usage of csClient.usages.list(location)) {
+    const name = usage.name?.value || ''
+    if ((name === 'CognitiveServices.accounts' || name === 'AIServices.accounts') &&
+        usage.limit !== undefined && usage.currentValue !== undefined &&
+        usage.currentValue >= usage.limit) {
+      throw new Error(`Quota exceeded in ${location}: ${usage.name?.localizedValue || name} (${usage.currentValue}/${usage.limit}). Choose a different region or request a quota increase in the Azure portal.`)
+    }
+  }
+
   // Ensure resource group exists
   const rmClient = new ResourceManagementClient(azureCredential, subscriptionId)
   await rmClient.resourceGroups.createOrUpdate(resourceGroup, { location })
 
-  // Create AI Services account
-  const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
+  // Create next-gen Foundry resource (with project management + custom subdomain)
   const poller = await csClient.accounts.beginCreate(resourceGroup, accountName, {
     location,
     kind: 'AIServices',
     sku: { name: 'S0' },
-    properties: {}
+    identity: { type: 'SystemAssigned' as any },
+    properties: {
+      allowProjectManagement: true,
+      customSubDomainName: accountName
+    } as any
   })
   const account = await poller.pollUntilDone()
 
@@ -918,7 +987,7 @@ export async function foundryCreateDeployment(
     accountName,
     deploymentName,
     {
-      sku: { name: skuName, capacity: 1 },
+      sku: { name: skuName, capacity: 80 },
       properties: {
         model: {
           name: modelName,
@@ -1010,7 +1079,7 @@ export function getFoundryProviderConfig(): {
     type: 'azure',
     baseUrl,
     apiKey,
-    azure: { apiVersion: config.apiVersion || '2024-10-21' },
+    azure: { apiVersion: '2025-04-01-preview' },
     modelId: config.modelId,
     wireModel: config.deploymentName
   }
