@@ -830,23 +830,27 @@ export async function foundryListLocations(subscriptionId: string): Promise<Azur
  */
 export async function foundryListAvailableModels(
   subscriptionId: string,
-  location: string
+  resourceGroup: string,
+  accountName: string
 ): Promise<FoundryAvailableModel[]> {
   if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
   const csClient = new CognitiveServicesManagementClient(azureCredential, subscriptionId)
   const result: FoundryAvailableModel[] = []
 
-  for await (const model of csClient.models.list(location)) {
-    const name = model.model?.name || ''
-    const version = model.model?.version || ''
-    const format = model.model?.format || ''
-    const skus = (model.model?.skus || []).map(s => s.name).filter(Boolean) as string[]
-    // Only show deployable OpenAI-compatible models that have at least one SKU
+  // Use account-scoped listModels — returns only models/SKUs valid for this specific account
+  for await (const model of csClient.accounts.listModels(resourceGroup, accountName)) {
+    const name = model.name || ''
+    const version = model.version || ''
+    const format = model.format || ''
+    const skus = (model.skus || [])
+      .filter(s => s.name && (s.capacity?.default ?? 0) > 0)
+      .map(s => s.name!)
     if (format === 'OpenAI' && name && version && skus.length > 0) {
       result.push({ name, version, format, skus })
     }
   }
 
+  result.sort((a, b) => a.name.localeCompare(b.name))
   return result
 }
 

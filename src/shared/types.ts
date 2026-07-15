@@ -414,7 +414,7 @@ export interface AideAPI {
     foundrySelect(subscriptionId: string, resourceGroup: string, accountName: string, endpoint: string, deploymentName: string, model: string): Promise<void>
     foundryListSubscriptions(): Promise<AzureSubscription[]>
     foundryListLocations(subscriptionId: string): Promise<AzureLocation[]>
-    foundryListAvailableModels(subscriptionId: string, location: string): Promise<FoundryAvailableModel[]>
+    foundryListAvailableModels(subscriptionId: string, resourceGroup: string, accountName: string): Promise<FoundryAvailableModel[]>
     foundryCreateResource(subscriptionId: string, location: string, resourceGroup: string, accountName: string): Promise<FoundryResource>
     foundryCreateDeployment(subscriptionId: string, resourceGroup: string, accountName: string, deploymentName: string, modelName: string, modelVersion: string, modelFormat: string, skuName: string): Promise<FoundryDeployment>
     disconnect(type: ConnectionType): Promise<void>

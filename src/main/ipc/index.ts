@@ -87,7 +87,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('connections:foundrySelect', (_, subId, rg, account, endpoint, deployment, model) => foundrySelect(subId, rg, account, endpoint, deployment, model))
   ipcMain.handle('connections:foundryListSubscriptions', () => foundryListSubscriptions())
   ipcMain.handle('connections:foundryListLocations', (_, subId) => foundryListLocations(subId))
-  ipcMain.handle('connections:foundryListAvailableModels', (_, subId, location) => foundryListAvailableModels(subId, location))
+  ipcMain.handle('connections:foundryListAvailableModels', (_, subId, rg, account) => foundryListAvailableModels(subId, rg, account))
   ipcMain.handle('connections:foundryCreateResource', (_, subId, location, rg, name) => foundryCreateResource(subId, location, rg, name))
   ipcMain.handle('connections:foundryCreateDeployment', (_, subId, rg, account, depName, modelName, modelVer, modelFmt, skuName) => foundryCreateDeployment(subId, rg, account, depName, modelName, modelVer, modelFmt, skuName))
   ipcMain.handle('connections:disconnect', (_, type) => disconnect(type))

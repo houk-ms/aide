@@ -242,7 +242,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
     if (!res) return
     setFoundryError(null)
     try {
-      const models = await window.aide.connections.foundryListAvailableModels(res.subscriptionId, res.location)
+      const models = await window.aide.connections.foundryListAvailableModels(res.subscriptionId, res.resourceGroup, res.accountName)
       setAvailableModels(models)
       if (models.length === 0) {
         setFoundryError('No models available for deployment in this region.')
