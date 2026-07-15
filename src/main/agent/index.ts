@@ -77,6 +77,17 @@ export async function resetSession(taskId: string | null): Promise<void> {
   } catch (e) {
     console.log(`[Agent] session reset failed (may not exist): ${sessionId}`)
   }
+
+  // Notify the UI that the session was reset
+  const msg: ChatMessage = {
+    id: uuid(),
+    role: 'agent',
+    content: '🔄 Session reset — conversation history cleared. The next message starts a fresh context.',
+    timestamp: new Date().toISOString(),
+    taskId
+  }
+  saveMessage(msg)
+  emitEvent({ type: 'chat:message', message: msg })
 }
 
 // === Session ID Convention ===
