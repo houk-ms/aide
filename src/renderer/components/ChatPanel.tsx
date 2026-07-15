@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download, ExternalLink, RotateCw } from 'lucide-react'
+import { ArrowUp, ChevronLeft, Check, X, Pencil, ChevronDown, ChevronRight, Paperclip, Copy, CheckCheck, Square, Loader2, Activity, FileText, Files, FolderOpen, FileCode, FileArchive, FileVideo, FileAudio, File as FileIcon, AlertTriangle, Download, ExternalLink, RotateCw, RotateCcw } from 'lucide-react'
 import { useTaskStore } from '../stores/taskStore'
 import { useChatStore, GENERAL_KEY } from '../stores/chatStore'
 import type { LiveStep } from '../stores/chatStore'
@@ -520,6 +520,14 @@ export function ChatPanel() {
               <ChevronLeft size={16} strokeWidth={2} />
             </button>
             <span className="text-[13px] font-medium text-text-secondary no-drag">Aide</span>
+            <div className="flex-1" />
+            <button
+              onClick={() => { window.aide.chat.resetSession(null); }}
+              className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors no-drag"
+              title="Reset session (clear agent memory)"
+            >
+              <RotateCcw size={14} strokeWidth={2} />
+            </button>
           </div>
           <div className="h-px bg-edge" />
         </header>
