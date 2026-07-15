@@ -259,6 +259,7 @@ export interface FoundryAvailableModel {
   name: string              // e.g. 'gpt-4o'
   version: string           // e.g. '2024-08-06'
   format: string            // e.g. 'OpenAI'
+  skus: string[]            // e.g. ['Standard', 'GlobalStandard']
 }
 
 /** Azure subscription summary for resource creation flow. */
@@ -415,7 +416,7 @@ export interface AideAPI {
     foundryListLocations(subscriptionId: string): Promise<AzureLocation[]>
     foundryListAvailableModels(subscriptionId: string, location: string): Promise<FoundryAvailableModel[]>
     foundryCreateResource(subscriptionId: string, location: string, resourceGroup: string, accountName: string): Promise<FoundryResource>
-    foundryCreateDeployment(subscriptionId: string, resourceGroup: string, accountName: string, deploymentName: string, modelName: string, modelVersion: string, modelFormat: string): Promise<FoundryDeployment>
+    foundryCreateDeployment(subscriptionId: string, resourceGroup: string, accountName: string, deploymentName: string, modelName: string, modelVersion: string, modelFormat: string, skuName: string): Promise<FoundryDeployment>
     disconnect(type: ConnectionType): Promise<void>
     getFoundryConfig(): Promise<FoundryConfig | null>
     listGhAccounts(): Promise<{ account: string; active: boolean }[]>

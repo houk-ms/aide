@@ -600,7 +600,7 @@ export function ChatPanel() {
                     onClick={() => setShowModelPicker(!showModelPicker)}
                     className={`h-7 px-2 rounded-lg flex items-center gap-1 text-[12px] transition-colors ${
                       models.find(m => m.id === selectedModel)?.source === 'foundry'
-                        ? 'text-teal-400 hover:text-teal-300 hover:bg-teal-500/10'
+                        ? 'text-[#00A3EE] hover:text-[#33b5f1] hover:bg-[#00A3EE]/10'
                         : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2'
                     }`}
                   >
@@ -627,7 +627,7 @@ export function ChatPanel() {
                               {foundryModels.length > 0 && (
                                 <>
                                   <div className="px-3 pt-1.5 pb-1">
-                                    <span className="text-[10px] font-medium uppercase tracking-wider text-teal-400">Azure AI Foundry</span>
+                                    <span className="text-[10px] font-medium uppercase tracking-wider text-[#00A3EE]">Microsoft Foundry</span>
                                   </div>
                                   {foundryModels.map(m => (
                                     <button
@@ -637,7 +637,7 @@ export function ChatPanel() {
                                     >
                                       {m.id === selectedModel && <Check size={13} className="shrink-0" />}
                                       <span className={m.id === selectedModel ? '' : 'ml-[21px]'}>{m.name}</span>
-                                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-400 font-medium">BYOK</span>
+                                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-[#00A3EE]/10 text-[#00A3EE] font-medium">BYOK</span>
                                     </button>
                                   ))}
                                   <div className="my-1 border-t border-edge" />

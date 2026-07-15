@@ -52,7 +52,7 @@ export function DiscordLogo({ size = 18 }: { size?: number }) {
   )
 }
 
-/** Azure AI Foundry logo — stylized hexagonal AI icon. */
+/** Microsoft Foundry logo — stylized hexagonal AI icon. */
 export function FoundryLogo({ size = 18 }: { size?: number }) {
   return (
     <img

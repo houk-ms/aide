@@ -129,7 +129,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
     'idle' | 'signing-in' | 'loading-resources' | 'pick-resource' |
     'loading-deployments' | 'pick-deployment' | 'saving' |
     'create-resource-pick-sub' | 'create-resource-pick-location' | 'create-resource-name' | 'creating-resource' |
-    'create-deployment-pick-model' | 'create-deployment-name' | 'creating-deployment'
+    'create-deployment-pick-model' | 'create-deployment-pick-sku' | 'create-deployment-name' | 'creating-deployment'
   >('idle')
   const [foundryResources, setFoundryResources] = useState<FoundryResource[]>([])
   const [foundryDeployments, setFoundryDeployments] = useState<FoundryDeployment[]>([])
@@ -157,6 +157,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const [createResourceName, setCreateResourceName] = useState('')
   const [createDeploymentName, setCreateDeploymentName] = useState('')
   const [selectedModel, setSelectedModel] = useState<FoundryAvailableModel | null>(null)
+  const [selectedSku, setSelectedSku] = useState<string>('')
 
   const handleFoundrySetup = async () => {
     setShowFoundryPanel(true)
@@ -258,11 +259,19 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
   const handlePickModel = (model: FoundryAvailableModel) => {
     setSelectedModel(model)
     setCreateDeploymentName(model.name)
-    setFoundryStep('create-deployment-name')
+    const skus = model.skus || []
+    // Auto-select SKU if only one available
+    if (skus.length <= 1) {
+      setSelectedSku(skus[0] || 'Standard')
+      setFoundryStep('create-deployment-name')
+    } else {
+      setSelectedSku('')
+      setFoundryStep('create-deployment-pick-sku')
+    }
   }
 
   const handleCreateDeployment = async () => {
-    if (!foundrySelectedResource || !selectedModel || !createDeploymentName.trim()) return
+    if (!foundrySelectedResource || !selectedModel || !createDeploymentName.trim() || !selectedSku) return
     setFoundryStep('creating-deployment')
     setFoundryError(null)
     try {
@@ -273,7 +282,8 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
         createDeploymentName.trim(),
         selectedModel.name,
         selectedModel.version,
-        selectedModel.format
+        selectedModel.format,
+        selectedSku
       )
       // Now select it like a normal pick
       await window.aide.connections.foundrySelect(
@@ -299,12 +309,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
     try {
       const deps = await window.aide.connections.foundryListDeployments(resource.subscriptionId, resource.resourceGroup, resource.accountName)
       setFoundryDeployments(deps)
-      if (deps.length === 0) {
-        // No deployments — offer to create one
-        await startCreateDeploymentFlow(resource)
-      } else {
-        setFoundryStep('pick-deployment')
-      }
+      setFoundryStep('pick-deployment')
     } catch (err: any) {
       setFoundryError(err?.message || 'Failed to list deployments')
       setFoundryStep('pick-resource')
@@ -334,112 +339,62 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
 
   return (
     <div className="space-y-6">
+      {/* Model Providers section — Foundry only */}
       <section className="space-y-3">
-        <SectionLabel title="Sources" desc="Where Aide reads your work from — email, calendar, issues, and more." />
+        <SectionLabel title="Model Providers" desc="Bring your own models to power Aide workloads — from providers like Microsoft Foundry." />
         <div className="space-y-4">
-      {connections.map(conn => (
-        <Card key={conn.id}>
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3 flex-1 min-w-0">
-              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                conn.type === 'workiq' ? 'bg-blue-500/10 text-blue-400' : conn.type === 'foundry' ? 'bg-teal-500/10 text-teal-400' : 'bg-zinc-500/10 text-text-secondary'
-              }`}>
-                {conn.type === 'workiq' ? <MicrosoftIcon /> : conn.type === 'foundry' ? <FoundryLogo /> : <Github size={18} />}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[13px] font-medium text-text-primary">
-                  {conn.type === 'workiq' ? 'Microsoft 365' : conn.type === 'foundry' ? 'Azure AI Foundry' : 'GitHub'}
-                </p>
-                <p className="text-[12px] text-text-tertiary mt-0.5">
-                  {conn.type === 'workiq' ? 'Email · Calendar · Teams · OneDrive' : conn.type === 'foundry' ? 'Bring your own model via Azure AI Foundry' : 'Issues · Pull Requests · Repos'}
-                </p>
-                <div className="flex items-center gap-1.5 mt-1.5">
-                  <div className={`w-[6px] h-[6px] rounded-full ${
-                    conn.checking ? 'bg-text-tertiary animate-pulse' : conn.verified ? 'bg-success' : conn.authenticated ? 'bg-warning' : 'bg-text-tertiary'
-                  }`} />
-                  <span className={`text-[11px] ${
-                    conn.checking ? 'text-text-tertiary' : conn.verified ? 'text-success' : conn.authenticated ? 'text-warning' : 'text-text-tertiary'
-                  }`}>
-                    {conn.checking
-                      ? 'Checking connection…'
-                      : conn.verified
-                      ? `Connected${conn.activeAccount ? ` · ${conn.activeAccount}` : ''}`
-                      : conn.authenticated ? 'Signed in · verifying permissions' : 'Not connected'}
-                  </span>
-                </div>
-                {conn.lastError && (
-                  <div className="mt-1">
-                    <p className="text-[11px] text-danger">{conn.lastError}</p>
-                    <p className="text-[10px] text-text-tertiary mt-0.5">Press Ctrl+Shift+I to open DevTools for more details</p>
+          {connections.filter(c => c.type === 'foundry').map(conn => (
+            <Card key={conn.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-[#00A3EE]/10 text-[#00A3EE]">
+                    <FoundryLogo />
                   </div>
-                )}
-                {conn.type === 'github' && conn.authenticated && ghAccounts.length > 1 && (
-                  <div className="mt-2">
-                    <p className="text-[10px] text-text-tertiary mb-1">Switch account:</p>
-                    <div className="flex flex-wrap gap-1">
-                      {ghAccounts.map(acc => (
-                        <button
-                          key={acc.account}
-                          disabled={acc.active || switching}
-                          onClick={() => handleSwitchAccount(acc.account)}
-                          className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-                            acc.active
-                              ? 'bg-accent/15 text-accent font-medium cursor-default'
-                              : 'bg-surface-2 text-text-secondary hover:bg-surface-2/80 hover:text-text-primary'
-                          } ${switching ? 'opacity-50' : ''}`}
-                        >
-                          {acc.account}
-                        </button>
-                      ))}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-text-primary">Microsoft Foundry</p>
+                    <p className="text-[12px] text-text-tertiary mt-0.5">Use your own Azure-deployed models as the LLM backend</p>
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      <div className={`w-[6px] h-[6px] rounded-full ${
+                        conn.checking ? 'bg-text-tertiary animate-pulse' : conn.verified ? 'bg-success' : conn.authenticated ? 'bg-warning' : 'bg-text-tertiary'
+                      }`} />
+                      <span className={`text-[11px] ${
+                        conn.checking ? 'text-text-tertiary' : conn.verified ? 'text-success' : conn.authenticated ? 'text-warning' : 'text-text-tertiary'
+                      }`}>
+                        {conn.checking
+                          ? 'Checking connection…'
+                          : conn.verified
+                          ? `Connected${conn.activeAccount ? ` · ${conn.activeAccount}` : ''}`
+                          : conn.authenticated ? 'Signed in · verifying permissions' : 'Not connected'}
+                      </span>
                     </div>
+                    {conn.lastError && (
+                      <div className="mt-1">
+                        <p className="text-[11px] text-danger">{conn.lastError}</p>
+                      </div>
+                    )}
                   </div>
-                )}
-                {isCliMissing(conn.type) && !conn.authenticated && (
-                  <div className="mt-2 p-2.5 rounded-lg bg-surface-2/60 border border-edge-subtle">
-                    <p className="text-[11px] text-text-secondary mb-1">Install the <code className="bg-surface-2 px-1 rounded text-[10px]">gh</code> CLI first:</p>
-                    <p className="text-[11px] text-text-tertiary">
-                      <code className="bg-surface-2 px-1 rounded text-[10px]">winget install GitHub.cli</code>
-                      {' · '}
-                      <a href="https://cli.github.com" className="text-accent hover:underline" onClick={e => { e.preventDefault(); window.open('https://cli.github.com') }}>Download</a>
-                    </p>
-                  </div>
-                )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {conn.authenticated && (
+                    <Btn variant="danger" onClick={() => disconnect(conn.type)}>Disconnect</Btn>
+                  )}
+                  <Btn
+                    disabled={foundryStep === 'signing-in'}
+                    onClick={() => handleFoundrySetup()}
+                  >
+                    {conn.verified ? 'Change Model' : 'Set Up'}
+                  </Btn>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {conn.authenticated && (
-                <Btn variant="danger" onClick={() => disconnect(conn.type)}>Disconnect</Btn>
-              )}
-              {!isCliMissing(conn.type) && (
-                <Btn
-                  disabled={connecting === conn.type || foundryStep === 'signing-in'}
-                  onClick={async () => {
-                    if (conn.type === 'foundry') {
-                      handleFoundrySetup()
-                      return
-                    }
-                    setConnecting(conn.type)
-                    try {
-                      if (conn.type === 'github') await window.aide.connections.authenticateGitHub()
-                      else await window.aide.connections.authenticateMicrosoft()
-                    } catch { /* handled via event */ }
-                    finally { setConnecting(null) }
-                  }}
-                >
-                  {connecting === conn.type ? 'Connecting…' : conn.type === 'foundry' ? (conn.verified ? 'Change Model' : 'Set Up') : (conn.authenticated ? 'Reauthorize' : 'Connect')}
-                </Btn>
-              )}
-            </div>
-          </div>
-        </Card>
-      ))}
+            </Card>
+          ))}
 
           {/* Foundry discovery panel (stepped flow) */}
           {showFoundryPanel && (
             <Card>
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-[12px] text-text-secondary font-medium">Azure AI Foundry Setup</p>
+                  <p className="text-[12px] text-text-secondary font-medium">Microsoft Foundry Setup</p>
                   <button onClick={() => { setShowFoundryPanel(false); setFoundryStep('idle'); setFoundryError(null) }} className="text-text-tertiary hover:text-text-secondary">
                     <X size={14} />
                   </button>
@@ -525,24 +480,36 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <button onClick={() => setFoundryStep('pick-resource')} className="text-[11px] text-accent hover:underline">← Back</button>
-                        <p className="text-[11px] text-text-tertiary">Select a deployment from <span className="font-medium text-text-secondary">{foundrySelectedResource?.accountName}</span>:</p>
+                        <p className="text-[11px] text-text-tertiary">
+                          {foundryDeployments.length > 0
+                            ? <>Select a deployment from <span className="font-medium text-text-secondary">{foundrySelectedResource?.accountName}</span>:</>
+                            : <>No deployed models in <span className="font-medium text-text-secondary">{foundrySelectedResource?.accountName}</span>.</>
+                          }
+                        </p>
                       </div>
                       <button onClick={() => startCreateDeploymentFlow()} className="text-[11px] text-accent hover:underline flex items-center gap-1">
                         <Plus size={11} /> Deploy model
                       </button>
                     </div>
-                    <div className="max-h-48 overflow-y-auto space-y-1">
-                      {foundryDeployments.map((d, i) => (
-                        <button
-                          key={i}
-                          onClick={() => handleFoundryPickDeployment(d)}
-                          className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
-                        >
-                          <p className="text-[12px] text-text-primary font-medium">{d.model} <span className="text-text-tertiary font-normal">({d.name})</span></p>
-                          <p className="text-[10px] text-text-tertiary">v{d.modelVersion} · {d.skuName}</p>
-                        </button>
-                      ))}
-                    </div>
+                    {foundryDeployments.length === 0 ? (
+                      <div className="px-3 py-4 rounded-lg bg-surface-2 text-center">
+                        <p className="text-[12px] text-text-secondary">This project has no model deployments yet.</p>
+                        <p className="text-[11px] text-text-tertiary mt-1">Click <span className="text-accent font-medium">Deploy model</span> above to pick from available models and create a deployment.</p>
+                      </div>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto space-y-1">
+                        {foundryDeployments.map((d, i) => (
+                          <button
+                            key={i}
+                            onClick={() => handleFoundryPickDeployment(d)}
+                            className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                          >
+                            <p className="text-[12px] text-text-primary font-medium">{d.model} <span className="text-text-tertiary font-normal">({d.name})</span></p>
+                            <p className="text-[10px] text-text-tertiary">v{d.modelVersion} · {d.skuName}</p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -636,7 +603,28 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                           className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
                         >
                           <p className="text-[12px] text-text-primary font-medium">{m.name}</p>
-                          <p className="text-[10px] text-text-tertiary">v{m.version} · {m.format}</p>
+                          <p className="text-[10px] text-text-tertiary">v{m.version}{m.skus?.length ? ` · ${m.skus.join(', ')}` : ''}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pick SKU (only shown if model supports multiple) */}
+                {foundryStep === 'create-deployment-pick-sku' && selectedModel && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setFoundryStep('create-deployment-pick-model')} className="text-[11px] text-accent hover:underline">← Back</button>
+                      <p className="text-[11px] text-text-tertiary">Select a SKU for <span className="font-medium text-text-secondary">{selectedModel.name}</span>:</p>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {selectedModel.skus.map(sku => (
+                        <button
+                          key={sku}
+                          onClick={() => { setSelectedSku(sku); setFoundryStep('create-deployment-name') }}
+                          className="w-full text-left px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-2/80 transition-colors"
+                        >
+                          <p className="text-[12px] text-text-primary font-medium">{sku}</p>
                         </button>
                       ))}
                     </div>
@@ -658,7 +646,7 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
                       className="w-full px-3 py-2 rounded-lg bg-surface-2 border border-edge text-[12px] text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent"
                       onKeyDown={e => e.key === 'Enter' && handleCreateDeployment()}
                     />
-                    <p className="text-[10px] text-text-tertiary">Deploying <span className="font-medium">{selectedModel?.name}</span> v{selectedModel?.version} with Standard SKU.</p>
+                    <p className="text-[10px] text-text-tertiary">Deploying <span className="font-medium">{selectedModel?.name}</span> v{selectedModel?.version} with {selectedSku} SKU.</p>
                     <Btn onClick={handleCreateDeployment} disabled={!createDeploymentName.trim()}>Deploy Model</Btn>
                   </div>
                 )}
@@ -678,6 +666,104 @@ function ConnectionsTab({ connections }: { connections: ConnectionStatus[] }) {
               </div>
             </Card>
           )}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <SectionLabel title="Sources" desc="Where Aide reads your work from — email, calendar, issues, and more." />
+        <div className="space-y-4">
+      {connections.filter(c => c.type !== 'foundry').map(conn => (
+        <Card key={conn.id}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3 flex-1 min-w-0">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                conn.type === 'workiq' ? 'bg-blue-500/10 text-blue-400' : 'bg-zinc-500/10 text-text-secondary'
+              }`}>
+                {conn.type === 'workiq' ? <MicrosoftIcon /> : <Github size={18} />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] font-medium text-text-primary">
+                  {conn.type === 'workiq' ? 'Microsoft 365' : 'GitHub'}
+                </p>
+                <p className="text-[12px] text-text-tertiary mt-0.5">
+                  {conn.type === 'workiq' ? 'Email · Calendar · Teams · OneDrive' : 'Issues · Pull Requests · Repos'}
+                </p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <div className={`w-[6px] h-[6px] rounded-full ${
+                    conn.checking ? 'bg-text-tertiary animate-pulse' : conn.verified ? 'bg-success' : conn.authenticated ? 'bg-warning' : 'bg-text-tertiary'
+                  }`} />
+                  <span className={`text-[11px] ${
+                    conn.checking ? 'text-text-tertiary' : conn.verified ? 'text-success' : conn.authenticated ? 'text-warning' : 'text-text-tertiary'
+                  }`}>
+                    {conn.checking
+                      ? 'Checking connection…'
+                      : conn.verified
+                      ? `Connected${conn.activeAccount ? ` · ${conn.activeAccount}` : ''}`
+                      : conn.authenticated ? 'Signed in · verifying permissions' : 'Not connected'}
+                  </span>
+                </div>
+                {conn.lastError && (
+                  <div className="mt-1">
+                    <p className="text-[11px] text-danger">{conn.lastError}</p>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">Press Ctrl+Shift+I to open DevTools for more details</p>
+                  </div>
+                )}
+                {conn.type === 'github' && conn.authenticated && ghAccounts.length > 1 && (
+                  <div className="mt-2">
+                    <p className="text-[10px] text-text-tertiary mb-1">Switch account:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {ghAccounts.map(acc => (
+                        <button
+                          key={acc.account}
+                          disabled={acc.active || switching}
+                          onClick={() => handleSwitchAccount(acc.account)}
+                          className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
+                            acc.active
+                              ? 'bg-accent/15 text-accent font-medium cursor-default'
+                              : 'bg-surface-2 text-text-secondary hover:bg-surface-2/80 hover:text-text-primary'
+                          } ${switching ? 'opacity-50' : ''}`}
+                        >
+                          {acc.account}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {isCliMissing(conn.type) && !conn.authenticated && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-surface-2/60 border border-edge-subtle">
+                    <p className="text-[11px] text-text-secondary mb-1">Install the <code className="bg-surface-2 px-1 rounded text-[10px]">gh</code> CLI first:</p>
+                    <p className="text-[11px] text-text-tertiary">
+                      <code className="bg-surface-2 px-1 rounded text-[10px]">winget install GitHub.cli</code>
+                      {' · '}
+                      <a href="https://cli.github.com" className="text-accent hover:underline" onClick={e => { e.preventDefault(); window.open('https://cli.github.com') }}>Download</a>
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {conn.authenticated && (
+                <Btn variant="danger" onClick={() => disconnect(conn.type)}>Disconnect</Btn>
+              )}
+              {!isCliMissing(conn.type) && (
+                <Btn
+                  disabled={connecting === conn.type}
+                  onClick={async () => {
+                    setConnecting(conn.type)
+                    try {
+                      if (conn.type === 'github') await window.aide.connections.authenticateGitHub()
+                      else await window.aide.connections.authenticateMicrosoft()
+                    } catch { /* handled via event */ }
+                    finally { setConnecting(null) }
+                  }}
+                >
+                  {connecting === conn.type ? 'Connecting…' : (conn.authenticated ? 'Reauthorize' : 'Connect')}
+                </Btn>
+              )}
+            </div>
+          </div>
+        </Card>
+      ))}
         </div>
       </section>
 

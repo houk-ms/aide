@@ -89,7 +89,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('connections:foundryListLocations', (_, subId) => foundryListLocations(subId))
   ipcMain.handle('connections:foundryListAvailableModels', (_, subId, location) => foundryListAvailableModels(subId, location))
   ipcMain.handle('connections:foundryCreateResource', (_, subId, location, rg, name) => foundryCreateResource(subId, location, rg, name))
-  ipcMain.handle('connections:foundryCreateDeployment', (_, subId, rg, account, depName, modelName, modelVer, modelFmt) => foundryCreateDeployment(subId, rg, account, depName, modelName, modelVer, modelFmt))
+  ipcMain.handle('connections:foundryCreateDeployment', (_, subId, rg, account, depName, modelName, modelVer, modelFmt, skuName) => foundryCreateDeployment(subId, rg, account, depName, modelName, modelVer, modelFmt, skuName))
   ipcMain.handle('connections:disconnect', (_, type) => disconnect(type))
   ipcMain.handle('connections:getFoundryConfig', () => getFoundryConfig())
   ipcMain.handle('connections:listGhAccounts', () => listGhAccounts())

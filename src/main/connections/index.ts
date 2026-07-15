@@ -840,9 +840,10 @@ export async function foundryListAvailableModels(
     const name = model.model?.name || ''
     const version = model.model?.version || ''
     const format = model.model?.format || ''
-    // Only show deployable OpenAI-compatible models
-    if (format === 'OpenAI' && name && version) {
-      result.push({ name, version, format })
+    const skus = (model.model?.skus || []).map(s => s.name).filter(Boolean) as string[]
+    // Only show deployable OpenAI-compatible models that have at least one SKU
+    if (format === 'OpenAI' && name && version && skus.length > 0) {
+      result.push({ name, version, format, skus })
     }
   }
 
@@ -902,7 +903,8 @@ export async function foundryCreateDeployment(
   deploymentName: string,
   modelName: string,
   modelVersion: string,
-  modelFormat: string
+  modelFormat: string,
+  skuName: string
 ): Promise<FoundryDeployment> {
   if (!azureCredential) throw new Error('Not signed in to Azure. Please sign in first.')
 
@@ -912,7 +914,7 @@ export async function foundryCreateDeployment(
     accountName,
     deploymentName,
     {
-      sku: { name: 'Standard', capacity: 1 },
+      sku: { name: skuName, capacity: 1 },
       properties: {
         model: {
           name: modelName,

@@ -694,7 +694,7 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
   Object.assign(config, await resolveSessionTuning(model))
 
   // When the user has selected a Foundry model, inject the BYOK provider so
-  // the SDK routes inference to the Azure AI Foundry endpoint while keeping
+  // the SDK routes inference to the Microsoft Foundry endpoint while keeping
   // the full tool-calling / reasoning loop intact.
   if (isFoundryModel(model)) {
     const provider = getFoundryProviderConfig()
