@@ -488,8 +488,10 @@ export async function disconnect(type: 'workiq' | 'github' | 'foundry'): Promise
     conn.lastError = null
   }
 
-  const { stopMcpServer } = await import('../agent/mcp')
-  stopMcpServer(type)
+  if (type !== 'foundry') {
+    const { stopMcpServer } = await import('../agent/mcp')
+    stopMcpServer(type)
+  }
 }
 
 // === Init (check CLI auth on startup) ===
@@ -599,7 +601,7 @@ export function getMcpConfig() {
 import { InteractiveBrowserCredential, type TokenCredential, type AccessToken } from '@azure/identity'
 import { SubscriptionClient } from '@azure/arm-subscriptions'
 import { CognitiveServicesManagementClient } from '@azure/arm-cognitiveservices'
-import type { FoundryConfig, FoundryResource, FoundryDeployment } from '@shared/types'
+import type { FoundryResource, FoundryDeployment } from '@shared/types'
 
 const FOUNDRY_CONFIG_FILE = 'foundry-config.json'
 const FOUNDRY_KEY_FILE = 'foundry-key.enc'
