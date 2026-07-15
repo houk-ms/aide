@@ -751,12 +751,16 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
   const toolSetKey = config.tools?.map(t => t.name).sort().join(',') || ''
   const lastModel = sessionModelMap.get(sessionId)
   const lastToolSet = sessionToolSetMap.get(sessionId)
-  const modelChanged = lastModel != null && lastModel !== effectiveModel
-  const toolsChanged = lastToolSet != null && lastToolSet !== toolSetKey
+  // Force fresh session if: model changed, tools changed, OR first turn after
+  // restart (no prior record — the runtime may have a stale session with a
+  // tools_changed_notice baked into its history).
+  const isFirstTurn = lastModel == null
+  const modelChanged = !isFirstTurn && lastModel !== effectiveModel
+  const toolsChanged = !isFirstTurn && lastToolSet !== toolSetKey
   sessionModelMap.set(sessionId, effectiveModel)
   sessionToolSetMap.set(sessionId, toolSetKey)
 
-  if (!modelChanged && !toolsChanged) {
+  if (!isFirstTurn && !modelChanged && !toolsChanged) {
     try {
       const session = await client.resumeSession(sessionId, config)
       console.log(`[Agent] resumed session ${sessionId} with ${config.tools?.length ?? 0} custom tools`)
@@ -765,6 +769,7 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
       // Session doesn't exist yet — fall through to create
     }
   } else {
+    if (isFirstTurn) console.log(`[Agent] First turn after restart for session ${sessionId}, creating fresh session`)
     if (toolsChanged) console.log(`[Agent] Tool set changed for session ${sessionId}, creating fresh session`)
     if (modelChanged) console.log(`[Agent] Model changed for session ${sessionId}, creating fresh session`)
   }
