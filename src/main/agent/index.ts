@@ -670,7 +670,18 @@ async function getOrCreateSession(taskId: string | null): Promise<CopilotSession
   if (!client) throw sdkUnavailableError()
 
   const sessionId = taskId ? getTaskSessionId(taskId) : 'general'
-  const model = getSelectedModel()
+  let model = getSelectedModel()
+
+  // Validate the stored model is still available; fall back to DEFAULT_MODEL
+  // (or the first available model) if it was removed from the provider.
+  const available = await getSdkModels()
+  if (available.length > 0 && !available.some(m => m.id === model)) {
+    const fallback = available.find(m => m.id === DEFAULT_MODEL) ? DEFAULT_MODEL : available[0].id
+    console.warn(`[Agent] Stored model "${model}" is unavailable, falling back to "${fallback}"`)
+    setSelectedModel(fallback)
+    model = fallback
+  }
+
   const config: SessionConfig = {
     sessionId,
     model,
@@ -942,9 +953,20 @@ export async function executeJobSession(instruction: string, jobId: string, last
   setJobSession(true)
   setCurrentSessionId(sessionId)
   try {
+    let model = getSelectedModel()
+
+    // Validate the stored model is still available
+    const available = await getSdkModels()
+    if (available.length > 0 && !available.some(m => m.id === model)) {
+      const fallback = available.find(m => m.id === DEFAULT_MODEL) ? DEFAULT_MODEL : available[0].id
+      console.warn(`[Agent] Stored model "${model}" is unavailable for job "${jobId}", falling back to "${fallback}"`)
+      setSelectedModel(fallback)
+      model = fallback
+    }
+
     const session = await client.createSession({
       sessionId,
-      model: getSelectedModel(),
+      model,
       tools: buildTools(),
       hooks: jobHooks,
       infiniteSessions: { enabled: false },
