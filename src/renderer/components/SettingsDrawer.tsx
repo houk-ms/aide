@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { X, Link2, FolderOpen, Timer, Brain, Sliders, Trash2, Plus, Save, Check, Github, Send, RefreshCw, Download, CheckCircle2, AlertCircle, Sparkles, AlertTriangle, Search } from 'lucide-react'
+import { X, Link2, FolderOpen, Timer, Brain, Sliders, Trash2, Plus, Save, Check, Github, Send, RefreshCw, Download, CheckCircle2, AlertCircle, Sparkles, AlertTriangle, Search, Play } from 'lucide-react'
 import { WeChatLogo, TelegramLogo, DiscordLogo } from '../brand/icons'
 import { useSettingsStore } from '../stores/settingsStore'
 import type { Project, Job, ConnectionStatus, MemoryEntry, WeChatStatus, TelegramStatus, DiscordStatus, DeliveryTarget, UpdateState, Skill, BrowsableSkill } from '@shared/types'
@@ -361,6 +361,7 @@ function JobsTab({ jobs, onRefresh }: { jobs: Job[]; onRefresh: () => void }) {
   const [adding, setAdding] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [runningId, setRunningId] = useState<string | null>(null)
 
   return (
     <div className="space-y-4">
@@ -403,6 +404,14 @@ function JobsTab({ jobs, onRefresh }: { jobs: Job[]; onRefresh: () => void }) {
               <p className="text-[11px] text-text-tertiary mt-0.5">{describeCron(job.cron)}</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={async () => { setRunningId(job.id); try { await window.aide.jobs.run(job.id) } finally { setRunningId(null); onRefresh() } }}
+                disabled={runningId === job.id}
+                className="text-[12px] text-text-tertiary hover:text-accent opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50 disabled:cursor-wait"
+                title="Run now"
+              >
+                {runningId === job.id ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} />}
+              </button>
               <button onClick={() => setEditId(job.id)} className="text-[12px] text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-all">
                 Edit
               </button>
